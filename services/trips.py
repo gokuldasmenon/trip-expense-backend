@@ -1,14 +1,41 @@
 from database import get_connection
 import psycopg2.extras
+import random, string
+def generate_access_code(length=6):
+    """Generate a random uppercase alphanumeric access code."""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
+
 def add_trip(name, start_date, trip_type):
     conn = get_connection()
     cursor = conn.cursor()
+
+    access_code = generate_access_code()
+
     cursor.execute("""
-        INSERT INTO trips (name, start_date, trip_type) VALUES (%s, %s, %s)
-    """, (name, start_date, trip_type))
+        INSERT INTO trips (name, start_date, trip_type, access_code, status)
+        VALUES (%s, %s, %s, %s, 'ACTIVE')
+        RETURNING id, name, access_code
+    """, (name, start_date, trip_type, access_code))
+
+    trip = cursor.fetchone()
     conn.commit()
     conn.close()
-    return {"message": "Trip created successfully"}
+
+    return {
+        "message": "Trip created successfully",
+        "trip_id": trip[0],
+        "trip_name": trip[1],
+        "access_code": trip[2]
+    }
+
+
+def get_trip_by_code(access_code):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
+    trip = cursor.fetchone()
+    conn.close()
+    return trip
 
 def join_trip_by_code(access_code):
     conn = get_connection()
