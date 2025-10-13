@@ -1,4 +1,6 @@
 from database import get_connection
+import psycopg2.extras
+
 
 def add_family(trip_id, family_name, members_count):
     conn = get_connection()
@@ -6,22 +8,29 @@ def add_family(trip_id, family_name, members_count):
     cursor.execute("""
         INSERT INTO family_details (trip_id, family_name, members_count)
         VALUES (%s, %s, %s)
+        RETURNING id
     """, (trip_id, family_name, members_count))
+    new_id = cursor.fetchone()[0]
     conn.commit()
+    cursor.close()
     conn.close()
-    return {"message": "Family added successfully"}
+    return {"message": "Family added successfully", "family_id": new_id}
+
 
 def get_families(trip_id):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("""
         SELECT id, family_name, members_count
         FROM family_details
         WHERE trip_id = %s
+        ORDER BY id ASC
     """, (trip_id,))
-    rows = [dict(row) for row in cursor.fetchall()]
+    rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return {"families": rows}
+
 
 def update_family(family_id, family_name, members_count):
     conn = get_connection()
@@ -32,13 +41,16 @@ def update_family(family_id, family_name, members_count):
         WHERE id = %s
     """, (family_name, members_count, family_id))
     conn.commit()
+    cursor.close()
     conn.close()
     return {"message": "Family updated successfully"}
+
 
 def delete_family(family_id):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM family_details WHERE id = %s", (family_id,))
     conn.commit()
+    cursor.close()
     conn.close()
     return {"message": "Family deleted successfully"}
