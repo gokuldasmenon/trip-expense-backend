@@ -34,67 +34,60 @@ def get_connection():
 # ✅ 3. Initialize All Tables (idempotent)
 # ============================================================
 def initialize_database():
-    """Create all required tables if they do not already exist."""
     conn = get_connection()
     cur = conn.cursor()
-    try:
-        # --- Trips Table ---
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS trips (
-            id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            start_date TEXT,
-            trip_type TEXT,
-            access_code TEXT UNIQUE,     -- 🔑 Allows multi-user access
-            status TEXT DEFAULT 'ACTIVE'
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
 
-        # --- Families Table ---
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS family_details (
-            id SERIAL PRIMARY KEY,
-            trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
-            family_name TEXT NOT NULL,
-            members_count INTEGER NOT NULL DEFAULT 0
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
+    # ✅ Trips Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS trips (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        start_date TEXT,
+        trip_type TEXT,
+        access_code TEXT UNIQUE,
+        status TEXT DEFAULT 'ACTIVE',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
 
-        # --- Expenses Table ---
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id SERIAL PRIMARY KEY,
-            trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
-            payer_family_id INTEGER REFERENCES family_details(id) ON DELETE SET NULL,
-            expense_name TEXT NOT NULL,
-            amount NUMERIC(12,2) NOT NULL DEFAULT 0,
-            date TEXT
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
+    # ✅ Family Details Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS family_details (
+        id SERIAL PRIMARY KEY,
+        trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
+        family_name TEXT NOT NULL,
+        members_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
 
-        # --- Advances Table ---
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS advances (
-            id SERIAL PRIMARY KEY,
-            trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
-            payer_family_id INTEGER REFERENCES family_details(id) ON DELETE CASCADE,
-            receiver_family_id INTEGER REFERENCES family_details(id) ON DELETE CASCADE,
-            amount NUMERIC(12,2) NOT NULL,
-            date TEX
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
+    # ✅ Expenses Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS expenses (
+        id SERIAL PRIMARY KEY,
+        trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
+        payer_family_id INTEGER REFERENCES family_details(id) ON DELETE SET NULL,
+        expense_name TEXT NOT NULL,
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        date TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
 
-        # ✅ Commit all
-        conn.commit()
-        print("✅ Database initialized successfully")
+    # ✅ Advances Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS advances (
+        id SERIAL PRIMARY KEY,
+        trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
+        payer_family_id INTEGER REFERENCES family_details(id) ON DELETE CASCADE,
+        receiver_family_id INTEGER REFERENCES family_details(id) ON DELETE CASCADE,
+        amount NUMERIC(12,2) NOT NULL,
+        date TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
 
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ Error initializing database: {e}")
-    finally:
-        cur.close()
-        conn.close()
+    conn.commit()
+    cur.close()
+    conn.close()
+
