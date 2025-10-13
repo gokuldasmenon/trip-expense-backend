@@ -57,19 +57,36 @@ def join_trip_by_code(access_code):
 
 def get_all_trips():
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trips WHERE status='ACTIVE' ORDER BY id DESC")
-    rows = [dict(row) for row in cursor.fetchall()]
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("""
+        SELECT id, name, start_date, trip_type, access_code, status
+        FROM trips
+        WHERE status = 'ACTIVE'
+        ORDER BY id DESC
+    """)
+
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-    return {"trips": rows}
+    return rows  # already a list of dicts ✅
+
 
 def get_archived_trips():
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trips WHERE status='Archived' ORDER BY id DESC")
-    rows = [dict(row) for row in cursor.fetchall()]
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("""
+        SELECT id, name, start_date, trip_type, access_code, status
+        FROM trips
+        WHERE status = 'Archived'
+        ORDER BY id DESC
+    """)
+
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
-    return {"trips": rows}
+    return rows
 
 def archive_trip(trip_id):
     conn = get_connection()
