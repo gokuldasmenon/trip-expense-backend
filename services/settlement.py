@@ -1,19 +1,21 @@
 from database import get_connection
+import psycopg2.extras
+
 
 def get_settlement(trip_id: int):
     conn = get_connection()
-    conn.row_factory = lambda cursor, row: {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     # --- Step 1: Get all families ---
     cursor.execute("""
         SELECT id, family_name, members_count
         FROM family_details
-        WHERE trip_id = ?
+        WHERE trip_id = %s
     """, (trip_id,))
     families = cursor.fetchall()
 
     if not families:
+        cursor.close()
         conn.close()
         return {"message": "No families found for this trip."}
 
@@ -25,7 +27,7 @@ def get_settlement(trip_id: int):
     cursor.execute("""
         SELECT payer_family_id, amount
         FROM expenses
-        WHERE trip_id = ?
+        WHERE trip_id = %s
     """, (trip_id,))
     expenses = cursor.fetchall()
 
@@ -34,7 +36,7 @@ def get_settlement(trip_id: int):
 
     for e in expenses:
         payer_id = e["payer_family_id"]
-        amt = e["amount"]
+        amt = float(e["amount"])
         if payer_id in expense_balance:
             expense_balance[payer_id] += amt
             total_expense += amt
@@ -42,31 +44,27 @@ def get_settlement(trip_id: int):
     # --- Step 3: Compute per-head cost ---
     total_members = sum(family_members.values())
     per_head_cost = total_expense / total_members if total_members > 0 else 0.0
-
     expected_share = {fid: family_members[fid] * per_head_cost for fid in family_ids}
 
     # --- Step 4: Get advances ---
     cursor.execute("""
         SELECT payer_family_id, receiver_family_id, amount
         FROM advances
-        WHERE trip_id = ?
+        WHERE trip_id = %s
     """, (trip_id,))
     advances = cursor.fetchall()
 
     advance_balance = {fid: 0.0 for fid in family_ids}
-
     for a in advances:
         payer_id = a["payer_family_id"]
         receiver_id = a["receiver_family_id"]
-        amt = a["amount"]
-
-        # apply only for families of this trip
+        amt = float(a["amount"])
         if payer_id in advance_balance:
             advance_balance[payer_id] += amt
         if receiver_id in advance_balance:
             advance_balance[receiver_id] -= amt
 
-    # --- Step 5: Compute net balances ---
+    # --- Step 5: Compute balances ---
     family_results = []
     for fid in family_ids:
         paid = expense_balance.get(fid, 0.0)
@@ -79,11 +77,11 @@ def get_settlement(trip_id: int):
             "family_name": family_names[fid],
             "members_count": family_members[fid],
             "total_spent": round(paid, 2),
-            "raw_balance": round(net, 2),  # store original balance
-            "balance": round(net, 2)       # working balance (used in transactions)
+            "raw_balance": round(net, 2),
+            "balance": round(net, 2)
         })
 
-    # --- Step 6: Build settlement transactions ---
+    # --- Step 6: Calculate transactions ---
     debtors = [f for f in family_results if f["balance"] < 0]
     creditors = [f for f in family_results if f["balance"] > 0]
     transactions = []
@@ -104,10 +102,11 @@ def get_settlement(trip_id: int):
             owed -= payment
             c["balance"] -= payment
 
-    # ✅ Step 7: Restore display balances (original raw values)
+    # ✅ Restore balances for display
     for f in family_results:
         f["balance"] = f["raw_balance"]
 
+    cursor.close()
     conn.close()
 
     return {
@@ -117,44 +116,45 @@ def get_settlement(trip_id: int):
         "families": family_results,
         "transactions": transactions if transactions else "All accounts settled"
     }
+
+
 def get_trip_summary(trip_id: int):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     # --- Trip info ---
-    cursor.execute("SELECT * FROM trips WHERE id = ?", (trip_id,))
+    cursor.execute("SELECT * FROM trips WHERE id = %s", (trip_id,))
     trip = cursor.fetchone()
     if not trip:
+        cursor.close()
         conn.close()
         return {"error": f"Trip with id {trip_id} not found"}
-
-    trip_data = dict(trip)
 
     # --- Families ---
     cursor.execute("""
         SELECT id, family_name, members_count
         FROM family_details
-        WHERE trip_id = ?
+        WHERE trip_id = %s
     """, (trip_id,))
-    families = [dict(row) for row in cursor.fetchall()]
+    families = cursor.fetchall()
 
     # --- Expenses ---
     cursor.execute("""
         SELECT e.expense_name, e.amount, e.date, f.family_name AS payer
         FROM expenses e
         JOIN family_details f ON e.payer_family_id = f.id
-        WHERE e.trip_id = ?
+        WHERE e.trip_id = %s
         ORDER BY e.date ASC, e.id ASC
     """, (trip_id,))
-    expenses = [dict(row) for row in cursor.fetchall()]
+    expenses = cursor.fetchall()
 
+    cursor.close()
     conn.close()
 
-    # --- Settlement details ---
     settlement_data = get_settlement(trip_id)
 
     return {
-        "trip": trip_data,
+        "trip": trip,
         "families": families,
         "expenses": expenses,
         "settlement": settlement_data
