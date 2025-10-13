@@ -1,10 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate,AdvanceModel
-from database import initialize_database
+from database import get_connection, initialize_database
 from services import trips, families, expenses, advances, settlement
 from fastapi.middleware.cors import CORSMiddleware
 import random, string
+from datetime import datetime
+from services import settlement
 app = FastAPI(title="Expense Tracker API")
 # ✅ Enable CORS for Flutter app
 app.add_middleware(
@@ -132,7 +134,7 @@ def add_advance(advance: AdvanceModel):   # ✅ reference from models, not advan
     )
 
 
-@app.get("/advances/{trip_id}")
+@app.get("/advances/{trip_id}") 
 def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
 
@@ -143,6 +145,54 @@ def get_advances(trip_id: int):
 @app.get("/settlement/{trip_id}")
 def get_settlement(trip_id: int):
     return settlement.get_settlement(trip_id)
+
+@app.get("/sync_settlement/{trip_id}")
+def sync_settlement(trip_id: int, last_sync: str | None = None):
+    """
+    Returns settlement data only if trip-related data changed after `last_sync` timestamp.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 🕒 Step 1: Find the latest update timestamp among all related tables
+    cursor.execute("""
+        SELECT GREATEST(
+            COALESCE(MAX(t.updated_at), '1970-01-01'),
+            COALESCE(MAX(f.updated_at), '1970-01-01'),
+            COALESCE(MAX(e.updated_at), '1970-01-01'),
+            COALESCE(MAX(a.updated_at), '1970-01-01')
+        )
+        FROM trips t
+        LEFT JOIN family_details f ON t.id = f.trip_id
+        LEFT JOIN expenses e ON t.id = e.trip_id
+        LEFT JOIN advances a ON t.id = a.trip_id
+        WHERE t.id = %s
+    """, (trip_id,))
+    latest_update = cursor.fetchone()[0]
+
+    cursor.close()
+    conn.close()
+
+    if not latest_update:
+        return {"message": "No updates found", "changed": False}
+
+    # 🧠 Step 2: Compare last_sync timestamp
+    if last_sync:
+        try:
+            last_sync_time = datetime.fromisoformat(last_sync)
+            if latest_update <= last_sync_time:
+                return {"changed": False, "message": "No new updates"}
+        except Exception:
+            return {"error": "Invalid last_sync format, expected ISO timestamp"}
+
+    # ⚙️ Step 3: Return recalculated settlement
+    settlement_data = settlement.get_settlement(trip_id)
+
+    return {
+        "changed": True,
+        "last_sync": str(latest_update),
+        "data": settlement_data
+    }
 
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):

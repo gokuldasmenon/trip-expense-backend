@@ -6,8 +6,8 @@ def add_family(trip_id, family_name, members_count):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO family_details (trip_id, family_name, members_count)
-        VALUES (%s, %s, %s)
+        INSERT INTO family_details (trip_id, family_name, members_count, updated_at)
+        VALUES (%s, %s, %s, NOW())
         RETURNING id
     """, (trip_id, family_name, members_count))
     new_id = cursor.fetchone()[0]
@@ -15,6 +15,7 @@ def add_family(trip_id, family_name, members_count):
     cursor.close()
     conn.close()
     return {"message": "Family added successfully", "family_id": new_id}
+
 
 
 def get_families(trip_id):
@@ -37,13 +38,17 @@ def update_family(family_id, family_name, members_count):
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE family_details
-        SET family_name = %s, members_count = %s
+        SET 
+            family_name = %s, 
+            members_count = %s,
+            updated_at = NOW()
         WHERE id = %s
     """, (family_name, members_count, family_id))
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Family updated successfully"}
+    return {"message": "Family updated successfully", "family_id": family_id}
+
 
 
 def delete_family(family_id):

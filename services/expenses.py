@@ -7,7 +7,7 @@ def add_expense(trip_id, payer_id, name, amount, date):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO expenses (trip_id, payer_family_id, expense_name, amount, date)
+        INSERT INTO expenses (trip_id, payer_family_id, expense_name, amount, date,updated_at)
         VALUES (%s, %s, %s, %s, %s)
         RETURNING id
     """, (trip_id, payer_id, name, amount, date))
@@ -46,13 +46,19 @@ def update_expense(expense_id, payer_id, name, amount, date):
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE expenses
-        SET payer_family_id = %s, expense_name = %s, amount = %s, date = %s
+        SET 
+            payer_family_id = %s, 
+            expense_name = %s, 
+            amount = %s, 
+            date = %s,
+            updated_at = NOW()
         WHERE id = %s
     """, (payer_id, name, amount, date, expense_id))
     conn.commit()
     cursor.close()
     conn.close()
-    return {"message": "Expense updated successfully"}
+    return {"message": "Expense updated successfully", "expense_id": expense_id}
+
 
 
 # ✅ Delete Expense
