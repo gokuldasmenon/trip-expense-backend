@@ -32,12 +32,17 @@ def home():
 
 @app.post("/create_trip")
 def create_trip(trip: TripIn):
-    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    from services.trips import generate_access_code
+    code = generate_access_code()
     return trips.add_trip(trip.name, trip.start_date, trip.trip_type, code)
 
 @app.get("/join_trip/{access_code}")
 def join_trip(access_code: str):
-    return trips.join_trip_by_code(access_code)
+    trip = trips.get_trip_by_code(access_code)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Invalid access code.")
+    return {"message": "Trip joined successfully", "trip": trip}
+
 
 
 @app.get("/trips")
