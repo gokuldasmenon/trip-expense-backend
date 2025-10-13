@@ -1,30 +1,46 @@
 from database import get_connection
-from models import AdvanceModel
+import psycopg2.extras
 
 def add_advance(trip_id, payer_id, receiver_id, amount, date):
+    """Record an advance payment between two families."""
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO advances (trip_id, payer_family_id, receiver_family_id, amount, date)
-        VALUES (?, ?, ?, ?, ?)
-    """, (trip_id, payer_id, receiver_id, amount, date))
-    conn.commit()
-    conn.close()
-    return {"message": "Advance recorded successfully"}
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO advances (trip_id, payer_family_id, receiver_family_id, amount, date)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (trip_id, payer_id, receiver_id, amount, date))
+        conn.commit()
+        return {"message": "Advance recorded successfully"}
+    except Exception as e:
+        conn.rollback()
+        print(f"Error adding advance: {e}")
+        return {"error": str(e)}
+    finally:
+        cursor.close()
+        conn.close()
+
 
 def get_advances(trip_id):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
     cursor.execute("""
-        SELECT a.id, a.amount, a.date,
-               f1.family_name AS payer_name,
-               f2.family_name AS receiver_name
+        SELECT 
+            a.id,
+            a.amount,
+            a.date,
+            f1.family_name AS payer_name,
+            f2.family_name AS receiver_name
         FROM advances a
         LEFT JOIN family_details f1 ON a.payer_family_id = f1.id
         LEFT JOIN family_details f2 ON a.receiver_family_id = f2.id
-        WHERE a.trip_id = ?
+        WHERE a.trip_id = %s
         ORDER BY a.date DESC
     """, (trip_id,))
-    rows = [dict(row) for row in cursor.fetchall()]
+
+    rows = cursor.fetchall()
+    cursor.close()
     conn.close()
+
     return {"advances": rows}
