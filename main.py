@@ -141,3 +141,6 @@ def get_settlement(trip_id: int):
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
+@app.get("/version")
+def version():
+    return {"version": "v1.1 - auto deploy test"}
