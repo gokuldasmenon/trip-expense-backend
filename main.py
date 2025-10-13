@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate
+from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate,AdvanceModel
 from database import initialize_database
 from services import trips, families, expenses, advances, settlement
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,7 +122,7 @@ def delete_expense(expense_id: int):
 # =========================================================
 
 @app.post("/add_advance")
-def add_advance(advance: advances.AdvanceModel):
+def add_advance(advance: AdvanceModel):   # ✅ reference from models, not advances
     return advances.add_advance(
         advance.trip_id,
         advance.payer_family_id,
@@ -130,6 +130,7 @@ def add_advance(advance: advances.AdvanceModel):
         advance.amount,
         advance.date
     )
+
 
 @app.get("/advances/{trip_id}")
 def get_advances(trip_id: int):
