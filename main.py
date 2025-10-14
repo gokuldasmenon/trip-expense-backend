@@ -53,12 +53,9 @@ def create_trip(trip: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/join_trip/{access_code}")
-def join_trip(access_code: str):
-    trip = trips.get_trip_by_code(access_code)
-    if not trip:
-        raise HTTPException(status_code=404, detail="Invalid access code.")
-    return {"message": "Trip joined successfully", "trip": trip}
+@app.get("/join_trip/{code}")
+def join_trip(code: str):
+    return trips.join_trip(code)
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):

@@ -39,7 +39,7 @@ def get_trip_by_code(access_code):
     conn.close()
     return trip
 
-def join_trip_by_code(access_code):
+def join_trip(access_code):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
     cur.execute("""
