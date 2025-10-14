@@ -1,4 +1,8 @@
 from database import get_connection
+import psycopg2.extras
+
+
+from database import get_connection
 
 def add_family(trip_id, family_name, members_count):
     conn = get_connection()
@@ -39,3 +43,17 @@ def delete_family(family_id):
     cursor.close()
     conn.close()
     return {"message": "Family deleted successfully"}
+
+def get_families(trip_id):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT id, family_name, members_count
+        FROM family_details
+        WHERE trip_id = %s
+        ORDER BY id ASC
+    """, (trip_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return {"families": rows}

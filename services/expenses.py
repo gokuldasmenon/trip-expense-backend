@@ -1,4 +1,6 @@
 from database import get_connection
+import psycopg2.extras
+
 
 def add_expense(trip_id, payer_id, name, amount, date):
     conn = get_connection()
@@ -41,3 +43,24 @@ def delete_expense(expense_id):
     cursor.close()
     conn.close()
     return {"message": "Expense deleted successfully"}
+
+
+def get_expenses(trip_id):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT 
+            e.id,
+            e.expense_name,
+            e.amount,
+            e.date,
+            f.family_name AS payer
+        FROM expenses e
+        LEFT JOIN family_details f ON e.payer_family_id = f.id
+        WHERE e.trip_id = %s
+        ORDER BY e.date ASC, e.id ASC
+    """, (trip_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
