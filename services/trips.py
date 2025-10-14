@@ -55,11 +55,16 @@ def join_trip_by_code(access_code):
 def get_all_trips():
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("SELECT id, name, start_date, trip_type, code FROM trips ORDER BY id DESC")
+    cursor.execute("""
+        SELECT id, name, start_date, trip_type, access_code
+        FROM trips
+        ORDER BY id DESC
+    """)
     trips = cursor.fetchall()
     cursor.close()
     conn.close()
     return trips
+
 
 
 
