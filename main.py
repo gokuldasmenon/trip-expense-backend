@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate,AdvanceModel
@@ -147,52 +148,46 @@ def get_settlement(trip_id: int):
     return settlement.get_settlement(trip_id)
 
 @app.get("/sync_settlement/{trip_id}")
-def sync_settlement(trip_id: int, last_sync: str | None = None):
-    """
-    Returns settlement data only if trip-related data changed after `last_sync` timestamp.
-    """
+def sync_settlement(trip_id: int, last_sync: Optional[str] = None):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 🕒 Step 1: Find the latest update timestamp among all related tables
+    # If no last_sync provided, always send settlement
+    if not last_sync:
+        cursor.close()
+        conn.close()
+        from services import settlement
+        data = settlement.get_settlement(trip_id)
+        return {"changed": True, "data": data, "last_sync": datetime.now().isoformat()}
+
     cursor.execute("""
         SELECT GREATEST(
             COALESCE(MAX(t.updated_at), '1970-01-01'),
             COALESCE(MAX(f.updated_at), '1970-01-01'),
             COALESCE(MAX(e.updated_at), '1970-01-01'),
             COALESCE(MAX(a.updated_at), '1970-01-01')
-        )
+        ) AS latest_update
         FROM trips t
-        LEFT JOIN family_details f ON t.id = f.trip_id
-        LEFT JOIN expenses e ON t.id = e.trip_id
-        LEFT JOIN advances a ON t.id = a.trip_id
+        LEFT JOIN family_details f ON f.trip_id = t.id
+        LEFT JOIN expenses e ON e.trip_id = t.id
+        LEFT JOIN advances a ON a.trip_id = t.id
         WHERE t.id = %s
     """, (trip_id,))
-    latest_update = cursor.fetchone()[0]
-
+    latest = cursor.fetchone()[0]
     cursor.close()
     conn.close()
 
-    if not latest_update:
-        return {"message": "No updates found", "changed": False}
+    last_sync_dt = datetime.fromisoformat(last_sync)
+    if latest > last_sync_dt:
+        from services import settlement
+        data = settlement.get_settlement(trip_id)
+        return {"changed": True, "data": data, "last_sync": datetime.now().isoformat()}
+    else:
+        # 🟢 Fix: send cached settlement even if no new change
+        from services import settlement
+        data = settlement.get_settlement(trip_id)
+        return {"changed": False, "data": data, "last_sync": last_sync}
 
-    # 🧠 Step 2: Compare last_sync timestamp
-    if last_sync:
-        try:
-            last_sync_time = datetime.fromisoformat(last_sync)
-            if latest_update <= last_sync_time:
-                return {"changed": False, "message": "No new updates"}
-        except Exception:
-            return {"error": "Invalid last_sync format, expected ISO timestamp"}
-
-    # ⚙️ Step 3: Return recalculated settlement
-    settlement_data = settlement.get_settlement(trip_id)
-
-    return {
-        "changed": True,
-        "last_sync": str(latest_update),
-        "data": settlement_data
-    }
 
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
