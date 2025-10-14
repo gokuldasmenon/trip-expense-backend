@@ -15,7 +15,25 @@ def add_expense(trip_id, payer_id, name, amount, date):
     cursor.close()
     conn.close()
     return {"message": "Expense added successfully", "expense_id": new_id}
-
+def get_expenses(trip_id):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT 
+            e.id,
+            e.expense_name,
+            e.amount,
+            e.date,
+            f.family_name AS payer
+        FROM expenses e
+        LEFT JOIN family_details f ON e.payer_family_id = f.id
+        WHERE e.trip_id = %s
+        ORDER BY e.date ASC, e.id ASC
+    """, (trip_id,))
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return rows
 
 def update_expense(expense_id, payer_id, name, amount, date):
     conn = get_connection()
@@ -45,22 +63,3 @@ def delete_expense(expense_id):
     return {"message": "Expense deleted successfully"}
 
 
-def get_expenses(trip_id):
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("""
-        SELECT 
-            e.id,
-            e.expense_name,
-            e.amount,
-            e.date,
-            f.family_name AS payer
-        FROM expenses e
-        LEFT JOIN family_details f ON e.payer_family_id = f.id
-        WHERE e.trip_id = %s
-        ORDER BY e.date ASC, e.id ASC
-    """, (trip_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
