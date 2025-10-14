@@ -12,19 +12,21 @@ def add_trip(name, start_date, trip_type):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Generate a unique access code
     access_code = generate_access_code()
+    print(f"🟢 Generated code for new trip: {access_code}")
 
     cursor.execute("""
         INSERT INTO trips (name, start_date, trip_type, access_code)
         VALUES (%s, %s, %s, %s)
-        RETURNING id, access_code
+        RETURNING id, name, start_date, trip_type, access_code
     """, (name, start_date, trip_type, access_code))
 
     new_trip = cursor.fetchone()
     conn.commit()
     cursor.close()
     conn.close()
+
+    print(f"✅ Trip created in DB: {new_trip}")
     return new_trip
 
 
