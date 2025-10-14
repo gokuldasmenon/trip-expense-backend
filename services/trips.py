@@ -4,7 +4,7 @@ import random, string
 from database import get_connection
 import random, string
 
-def generate_trip_code(length=6):
+def generate_access_code(length=6):
     """Generate a random 6-character alphanumeric trip code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
@@ -12,20 +12,20 @@ def add_trip(name, start_date, trip_type):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    code = generate_trip_code()
+    # Generate a unique access code
+    access_code = generate_access_code()
 
     cursor.execute("""
-        INSERT INTO trips (name, start_date, trip_type, code)
+        INSERT INTO trips (name, start_date, trip_type, access_code)
         VALUES (%s, %s, %s, %s)
-        RETURNING id, code
-    """, (name, start_date, trip_type, code))
+        RETURNING id, access_code
+    """, (name, start_date, trip_type, access_code))
 
-    trip = cursor.fetchone()
+    new_trip = cursor.fetchone()
     conn.commit()
     cursor.close()
     conn.close()
-
-    return trip  # returns {'id': 3, 'code': 'ABC123'}
+    return new_trip
 
 
 
