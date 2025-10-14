@@ -1,8 +1,5 @@
 from database import get_connection
-import psycopg2.extras
 
-
-# ✅ Add Expense
 def add_expense(trip_id, payer_id, name, amount, date):
     conn = get_connection()
     cursor = conn.cursor()
@@ -18,30 +15,6 @@ def add_expense(trip_id, payer_id, name, amount, date):
     return {"message": "Expense added successfully", "expense_id": new_id}
 
 
-
-# ✅ Get All Expenses for a Trip
-def get_expenses(trip_id):
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("""
-        SELECT 
-            e.id,
-            e.expense_name,
-            e.amount,
-            e.date,
-            f.family_name AS payer
-        FROM expenses e
-        LEFT JOIN family_details f ON e.payer_family_id = f.id
-        WHERE e.trip_id = %s
-        ORDER BY e.date ASC, e.id ASC
-    """, (trip_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
-
-
-# ✅ Update Expense
 def update_expense(expense_id, payer_id, name, amount, date):
     conn = get_connection()
     cursor = conn.cursor()
@@ -60,9 +33,6 @@ def update_expense(expense_id, payer_id, name, amount, date):
     return {"message": "Expense updated successfully"}
 
 
-
-
-# ✅ Delete Expense
 def delete_expense(expense_id):
     conn = get_connection()
     cursor = conn.cursor()
