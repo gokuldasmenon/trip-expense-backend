@@ -4,31 +4,28 @@ import random, string
 from database import get_connection
 import random, string
 
-def generate_access_code(length=6):
+def generate_trip_code(length=6):
+    """Generate a random 6-character alphanumeric trip code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-def add_trip(name, start_date, trip_type,access_code=None):
+def add_trip(name, start_date, trip_type):
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    access_code = generate_access_code()
+    code = generate_trip_code()
 
     cursor.execute("""
-        INSERT INTO trips (name, start_date, trip_type, access_code, status)
-        VALUES (%s, %s, %s, %s, 'ACTIVE')
-        RETURNING id
-    """, (name, start_date, trip_type, access_code))
+        INSERT INTO trips (name, start_date, trip_type, code)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id, code
+    """, (name, start_date, trip_type, code))
 
-    trip_id = cursor.fetchone()[0]
+    trip = cursor.fetchone()
     conn.commit()
     cursor.close()
     conn.close()
 
-    return {
-        "id": trip_id,
-        "access_code": access_code,
-        "message": "Trip created successfully"
-    }
+    return trip  # returns {'id': 3, 'code': 'ABC123'}
 
 
 

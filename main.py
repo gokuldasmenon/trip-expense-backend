@@ -34,10 +34,23 @@ def home():
 # =========================================================
 
 @app.post("/create_trip")
-def create_trip(trip: TripIn):
-    from services.trips import generate_access_code
-    code = generate_access_code()
-    return trips.add_trip(trip.name, trip.start_date, trip.trip_type, code)
+def create_trip(trip: dict):
+    try:
+        name = trip.get("name")
+        start_date = trip.get("start_date")
+        trip_type = trip.get("trip_type")
+
+        if not name or not start_date or not trip_type:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+
+        result = trips.add_trip(name, start_date, trip_type)
+        return {
+            "message": "Trip created successfully",
+            "trip_id": result["id"],
+            "code": result["code"],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/join_trip/{access_code}")
 def join_trip(access_code: str):
