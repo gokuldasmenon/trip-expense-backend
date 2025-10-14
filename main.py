@@ -61,7 +61,7 @@ def join_trip(access_code: str):
     return {"message": "Trip joined successfully", "trip": trip}
 
 @app.post("/add_trip")
-def add_trip(trip: trips.TripModel):
+def add_trip(trip: TripIn):
     result = trips.add_trip(trip.name, trip.start_date, trip.trip_type)
     return {"message": "Trip created successfully", "trip": result}
 
