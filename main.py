@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import random, string
 from datetime import datetime
 from services import settlement
+
 app = FastAPI(title="Expense Tracker API")
 # ✅ Enable CORS for Flutter app
 app.add_middleware(
