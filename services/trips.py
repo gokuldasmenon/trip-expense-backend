@@ -5,15 +5,15 @@ from database import get_connection
 import random, string
 
 def generate_access_code(length=6):
-    """Generate a random 6-character alphanumeric trip code."""
+    """Generate a 6-character alphanumeric trip access code."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-def add_trip(name, start_date, trip_type):
+
+def add_trip(name, start_date, trip_type, created_by="Owner"):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     access_code = generate_access_code()
-    print(f"🟢 Generated code for new trip: {access_code}")
 
     cursor.execute("""
         INSERT INTO trips (name, start_date, trip_type, access_code)
@@ -21,38 +21,20 @@ def add_trip(name, start_date, trip_type):
         RETURNING id, name, start_date, trip_type, access_code
     """, (name, start_date, trip_type, access_code))
 
-    new_trip = cursor.fetchone()
+    trip = cursor.fetchone()
+
+    # ✅ Record the trip creator as the owner
+    cursor.execute("""
+        INSERT INTO trip_participants (trip_id, user_name, role)
+        VALUES (%s, %s, 'owner')
+    """, (trip['id'], created_by))
+
     conn.commit()
     cursor.close()
     conn.close()
 
-    print(f"✅ Trip created in DB: {new_trip}")
-    return new_trip
-
-
-
-def get_trip_by_code(access_code):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
-    trip = cursor.fetchone()
-    conn.close()
     return trip
 
-def join_trip(access_code):
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-    cur.execute("""
-        SELECT id, name, start_date, trip_type, access_code, status
-        FROM trips
-        WHERE access_code = %s AND status = 'ACTIVE'
-    """, (access_code,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
-        raise Exception("Invalid or inactive trip code")
-    return {"trip": dict(row)}
 
 def get_all_trips():
     conn = get_connection()
@@ -68,7 +50,40 @@ def get_all_trips():
     return trips
 
 
+def join_trip_by_code(access_code, user_name="Guest"):
+    """Join an existing trip using its access code."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
+    trip = cursor.fetchone()
+
+    if not trip:
+        cursor.close()
+        conn.close()
+        return None
+
+    # ✅ Record the participant if not already joined
+    cursor.execute("""
+        INSERT INTO trip_participants (trip_id, user_name, role)
+        VALUES (%s, %s, 'member')
+        ON CONFLICT DO NOTHING
+    """, (trip['id'], user_name))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return trip
+
+
+def get_trip_by_code(access_code):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
+    trip = cursor.fetchone()
+    conn.close()
+    return trip
 
 def get_archived_trips():
     conn = get_connection()

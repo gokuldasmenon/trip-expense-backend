@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import random, string
 from datetime import datetime
 from services import settlement
-
+from fastapi import FastAPI, HTTPException, Query
 app = FastAPI(title="Expense Tracker API")
 # ✅ Enable CORS for Flutter app
 app.add_middleware(
@@ -20,7 +20,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
+class TripIn(BaseModel):
+    name: str
+    start_date: str
+    trip_type: str
+    created_by: str | None = "Owner"
+    
 # ✅ Initialize database
 @app.on_event("startup")
 def on_startup():
@@ -54,27 +59,22 @@ def create_trip(trip: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/join_trip/{code}")
-def join_trip(code: str):
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (code,))
-    trip = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
+@app.get("/join_trip/{access_code}")
+def join_trip(access_code: str, user_name: str = Query("Guest")):
+    trip = trips.join_trip_by_code(access_code, user_name)
     if not trip:
-        raise HTTPException(status_code=404, detail="Invalid access code")
-
-    return {"trip": trip}
+        raise HTTPException(status_code=404, detail="Invalid or expired access code")
+    return {"message": f"Joined {trip['name']} successfully!", "trip": trip}
 
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
-    result = trips.add_trip(trip.name, trip.start_date, trip.trip_type)
+    result = trips.add_trip(trip.name, trip.start_date, trip.trip_type, trip.created_by)
     return {"message": "Trip created successfully", "trip": result}
 
-
+@app.get("/trips")
+def get_trips():
+    return trips.get_all_trips()
 
 @app.get("/trips")
 def get_active_trips():
