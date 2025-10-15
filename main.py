@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import FastAPI, HTTPException
+import psycopg2
 from pydantic import BaseModel
 from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate,AdvanceModel
 from database import get_connection, initialize_database
@@ -55,7 +56,18 @@ def create_trip(trip: dict):
 
 @app.get("/join_trip/{code}")
 def join_trip(code: str):
-    return trips.join_trip(code)
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (code,))
+    trip = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not trip:
+        raise HTTPException(status_code=404, detail="Invalid access code")
+
+    return {"trip": trip}
+
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
@@ -211,3 +223,15 @@ def trip_summary(trip_id: int):
 @app.get("/version")
 def version():
     return {"version": "v1.1 - auto deploy test"}
+
+@app.get("/trip/{trip_id}")
+def get_trip(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("SELECT * FROM trips WHERE id = %s", (trip_id,))
+    trip = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return trip
