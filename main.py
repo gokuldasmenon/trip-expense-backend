@@ -123,8 +123,40 @@ def get_participants(trip_id: int):
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
-    result = trips.add_trip(trip.name, trip.start_date, trip.trip_type, trip.created_by)
-    return {"message": "Trip created successfully", "trip": result}
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # generate a random access code
+    import random, string
+    access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+    # assign default owner name if not passed
+    owner_name = getattr(trip, "owner_name", "Trip Owner")
+
+    cursor.execute("""
+        INSERT INTO trips (name, start_date, trip_type, access_code, owner_name)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id, name, start_date, trip_type, access_code, owner_name, created_at
+    """, (trip.name, trip.start_date, trip.trip_type, access_code, owner_name))
+
+    new_trip = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "message": "Trip created successfully",
+        "trip": {
+            "id": new_trip[0],
+            "name": new_trip[1],
+            "start_date": new_trip[2],
+            "trip_type": new_trip[3],
+            "access_code": new_trip[4],
+            "owner_name": new_trip[5],
+            "created_at": new_trip[6]
+        }
+    }
+
 
 @app.get("/trips")
 def get_trips():
