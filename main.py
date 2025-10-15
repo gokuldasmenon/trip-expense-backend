@@ -64,14 +64,33 @@ def join_trip(access_code: str, user_name: str):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, name, trip_type, start_date, access_code FROM trips WHERE access_code = %s", (access_code,))
+    cursor.execute("""
+        SELECT id, name, trip_type, start_date, access_code
+        FROM trips
+        WHERE access_code = %s
+    """, (access_code,))
     trip = cursor.fetchone()
+
     if not trip:
         raise HTTPException(status_code=404, detail="Invalid access code")
 
     trip_id = trip[0]
 
-    # ✅ Record participant
+    # 👑 Optional: Prevent owner from joining their own trip
+    cursor.execute("""
+        SELECT COUNT(*) FROM trip_participants WHERE trip_id = %s AND user_name = %s
+    """, (trip_id, user_name))
+    if cursor.fetchone()[0] > 0:
+        conn.close()
+        return {"message": "User already joined this trip", "trip": {
+            "id": trip[0],
+            "name": trip[1],
+            "trip_type": trip[2],
+            "start_date": trip[3],
+            "access_code": trip[4],
+        }}
+
+    # ✅ Safe insert (no crash even if duplicate)
     cursor.execute("""
         INSERT INTO trip_participants (trip_id, user_name)
         VALUES (%s, %s)
@@ -82,13 +101,14 @@ def join_trip(access_code: str, user_name: str):
     cursor.close()
     conn.close()
 
-    return {"trip": {
+    return {"message": "Joined successfully", "trip": {
         "id": trip[0],
         "name": trip[1],
         "trip_type": trip[2],
         "start_date": trip[3],
-        "access_code": trip[4]
+        "access_code": trip[4],
     }}
+
 @app.get("/participants/{trip_id}")
 def get_participants(trip_id: int):
     conn = get_connection()
