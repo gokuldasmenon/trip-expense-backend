@@ -60,11 +60,45 @@ def create_trip(trip: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/join_trip/{access_code}")
-def join_trip(access_code: str, user_name: str = Query("Guest")):
-    trip = trips.join_trip_by_code(access_code, user_name)
+def join_trip(access_code: str, user_name: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT id, name, trip_type, start_date, access_code FROM trips WHERE access_code = %s", (access_code,))
+    trip = cursor.fetchone()
     if not trip:
-        raise HTTPException(status_code=404, detail="Invalid or expired access code")
-    return {"message": f"Joined {trip['name']} successfully!", "trip": trip}
+        raise HTTPException(status_code=404, detail="Invalid access code")
+
+    trip_id = trip[0]
+
+    # ✅ Record participant
+    cursor.execute("""
+        INSERT INTO trip_participants (trip_id, user_name)
+        VALUES (%s, %s)
+        ON CONFLICT (trip_id, user_name) DO NOTHING
+    """, (trip_id, user_name))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {"trip": {
+        "id": trip[0],
+        "name": trip[1],
+        "trip_type": trip[2],
+        "start_date": trip[3],
+        "access_code": trip[4]
+    }}
+@app.get("/participants/{trip_id}")
+def get_participants(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_name FROM trip_participants WHERE trip_id = %s", (trip_id,))
+    participants = [r[0] for r in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return {"participants": participants}
+
 
 
 @app.post("/add_trip")
