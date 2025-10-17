@@ -13,7 +13,7 @@ from models import (
     FamilyUpdate, ExpenseUpdate, AdvanceModel, UserIn
 )
 from services import trips, families, expenses, advances, settlement
-
+from datetime import datetime
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
@@ -264,6 +264,11 @@ def get_trip(trip_id: int):
 
         if not trip:
             raise HTTPException(status_code=404, detail=f"Trip with ID {trip_id} not found")
+
+        # ✅ Convert any datetime fields to strings (ISO format)
+        for key, value in trip.items():
+            if isinstance(value, datetime):
+                trip[key] = value.isoformat()
 
         return JSONResponse(content=dict(trip), status_code=200)
 
