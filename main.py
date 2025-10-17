@@ -250,36 +250,55 @@ def join_trip(access_code: str, user_id: int):
         },
     }
 @app.get("/trips/{user_id}")
-def get_trips_for_user(user_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+def get_user_trips(user_id: int):
+    """
+    Fetch trips created by the user (own trips)
+    and trips they have joined via access code.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    cursor.execute("""
-        SELECT t.*, u.name AS owner_name
-        FROM trips t
-        LEFT JOIN users u ON t.owner_id = u.id
-        WHERE t.owner_id = %s
-        ORDER BY t.created_at DESC
-    """, (user_id,))
-    own_trips = cursor.fetchall()
+        # ✅ Trips created by the user (owner)
+        cursor.execute("""
+            SELECT t.*, u.name AS owner_name
+            FROM trips t
+            LEFT JOIN users u ON t.owner_id = u.id
+            WHERE t.owner_id = %s
+            ORDER BY t.created_at DESC
+        """, (user_id,))
+        own_trips = cursor.fetchall()
 
-    cursor.execute("""
-        SELECT t.*, u.name AS owner_name
-        FROM trips t
-        JOIN trip_members tm ON tm.trip_id = t.id
-        LEFT JOIN users u ON t.owner_id = u.id
-        WHERE tm.user_id = %s
-        ORDER BY t.created_at DESC
-    """, (user_id,))
-    joined_trips = cursor.fetchall()
+        # ✅ Trips the user has joined
+        cursor.execute("""
+            SELECT t.*, u.name AS owner_name
+            FROM trips t
+            JOIN trip_members tm ON tm.trip_id = t.id
+            LEFT JOIN users u ON t.owner_id = u.id
+            WHERE tm.user_id = %s
+            ORDER BY t.created_at DESC
+        """, (user_id,))
+        joined_trips = cursor.fetchall()
 
-    cursor.close()
-    conn.close()
+        cursor.close()
+        conn.close()
 
-    return {
-        "own_trips": own_trips,
-        "joined_trips": joined_trips
-    }
+        # ✅ Convert datetime fields to string
+        from datetime import datetime
+        for trip_list in (own_trips, joined_trips):
+            for trip in trip_list:
+                for key, value in trip.items():
+                    if isinstance(value, datetime):
+                        trip[key] = value.isoformat()
+
+        return {
+            "own_trips": own_trips,
+            "joined_trips": joined_trips
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/trip/{trip_id}")
