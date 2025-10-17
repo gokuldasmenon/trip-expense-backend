@@ -99,35 +99,45 @@ def register_user(user: UserIn):
 
 
 @app.post("/login_user")
-def login_user(phone: str | None = None, email: str | None = None):
+def login_user(user: dict):
+    """
+    User login with phone or email (email optional).
+    Requires prior registration in 'users' table.
+    """
+    phone = user.get("phone")
+    email = user.get("email")
+
     if not phone and not email:
-        raise HTTPException(status_code=400, detail="Provide phone or email")
+        raise HTTPException(status_code=400, detail="Provide either phone or email to login")
 
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
     cursor.execute("""
         SELECT id, name, phone, email, created_at
         FROM users
         WHERE (%s IS NOT NULL AND phone = %s)
            OR (%s IS NOT NULL AND email = %s)
     """, (phone, phone, email, email))
-    user = cursor.fetchone()
+
+    user_data = cursor.fetchone()
     cursor.close()
     conn.close()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not registered. Please register first.")
+
+    # ✅ Convert any datetime to string (avoid JSON serialization error)
+    from datetime import datetime
+    for key, value in user_data.items():
+        if isinstance(value, datetime):
+            user_data[key] = value.isoformat()
 
     return {
         "message": "✅ Login successful",
-        "user": {
-            "id": user[0],
-            "name": user[1],
-            "phone": user[2],
-            "email": user[3],
-            "created_at": user[4],
-        }
+        "user": user_data
     }
+
 
 
 
@@ -238,6 +248,37 @@ def join_trip(access_code: str, user_id: int):
             "start_date": trip[3],
             "access_code": trip[4],
         },
+    }
+@app.get("/trips/{user_id}")
+def get_trips_for_user(user_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT t.*, u.name AS owner_name
+        FROM trips t
+        LEFT JOIN users u ON t.owner_id = u.id
+        WHERE t.owner_id = %s
+        ORDER BY t.created_at DESC
+    """, (user_id,))
+    own_trips = cursor.fetchall()
+
+    cursor.execute("""
+        SELECT t.*, u.name AS owner_name
+        FROM trips t
+        JOIN trip_members tm ON tm.trip_id = t.id
+        LEFT JOIN users u ON t.owner_id = u.id
+        WHERE tm.user_id = %s
+        ORDER BY t.created_at DESC
+    """, (user_id,))
+    joined_trips = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return {
+        "own_trips": own_trips,
+        "joined_trips": joined_trips
     }
 
 
