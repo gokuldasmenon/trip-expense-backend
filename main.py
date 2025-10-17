@@ -4,7 +4,8 @@ from pydantic import BaseModel
 from typing import Optional
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
-
+from fastapi.responses import JSONResponse
+import psycopg2.extras
 # Local imports
 from database import get_connection, initialize_database
 from models import (
@@ -239,6 +240,35 @@ def join_trip(access_code: str, user_id: int):
         },
     }
 
+
+@app.get("/trip/{trip_id}")
+def get_trip(trip_id: int):
+    """
+    Fetch a single trip by ID (joins owner info for better response)
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code,
+                   t.status, t.owner_id, u.name AS owner_name, t.created_at
+            FROM public.trips t
+            LEFT JOIN public.users u ON t.owner_id = u.id
+            WHERE t.id = %s
+        """, (trip_id,))
+
+        trip = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not trip:
+            raise HTTPException(status_code=404, detail=f"Trip with ID {trip_id} not found")
+
+        return JSONResponse(content=dict(trip), status_code=200)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/trips")
