@@ -172,31 +172,73 @@ def add_trip(trip: TripIn):
 
 
 @app.post("/join_trip/{access_code}")
-def join_trip(access_code: str, user_id: int = Query(...)):
-    """Join existing trip using access code"""
+def join_trip(access_code: str, user_id: int):
+    """
+    Join a trip using the access code and link the user to trip_members table.
+    """
     conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    try:
-        cursor.execute("SELECT id, name, start_date, trip_type FROM trips WHERE access_code = %s", (access_code,))
-        trip = cursor.fetchone()
-        if not trip:
-            raise HTTPException(status_code=404, detail="Invalid access code")
+    cursor = conn.cursor()
 
-        cursor.execute("""
-            INSERT INTO trip_members (trip_id, user_id, role)
-            VALUES (%s, %s, 'member')
-            ON CONFLICT (trip_id, user_id) DO NOTHING
-        """, (trip["id"], user_id))
+    # ✅ Step 1: Check if trip exists
+    cursor.execute("""
+        SELECT id, name, trip_type, start_date, access_code
+        FROM trips
+        WHERE access_code = %s
+    """, (access_code,))
+    trip = cursor.fetchone()
 
-        conn.commit()
-        return {"message": "✅ Joined trip successfully", "trip": trip}
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
+    if not trip:
         conn.close()
+        raise HTTPException(status_code=404, detail="Invalid or expired access code")
+
+    trip_id = trip[0]
+
+    # ✅ Step 2: Check if user exists
+    cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # ✅ Step 3: Check if already joined
+    cursor.execute("""
+        SELECT COUNT(*) FROM trip_members
+        WHERE trip_id = %s AND user_id = %s
+    """, (trip_id, user_id))
+    if cursor.fetchone()[0] > 0:
+        conn.close()
+        return {
+            "message": "User already joined this trip",
+            "trip": {
+                "id": trip[0],
+                "name": trip[1],
+                "trip_type": trip[2],
+                "start_date": trip[3],
+                "access_code": trip[4],
+            },
+        }
+
+    # ✅ Step 4: Add member
+    cursor.execute("""
+        INSERT INTO trip_members (trip_id, user_id, role)
+        VALUES (%s, %s, 'member')
+    """, (trip_id, user_id))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {
+        "message": f"User {user[1]} joined trip {trip[1]} successfully",
+        "trip": {
+            "id": trip[0],
+            "name": trip[1],
+            "trip_type": trip[2],
+            "start_date": trip[3],
+            "access_code": trip[4],
+        },
+    }
+
 
 
 @app.get("/trips")
