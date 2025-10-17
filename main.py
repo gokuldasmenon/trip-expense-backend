@@ -44,9 +44,9 @@ def home():
 # ================================================
 @app.post("/register_user")
 def register_user(user: UserIn):
-    """Register a user by name, phone, and/or email"""
+    """Register user by name, phone, and/or email."""
     conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor = conn.cursor()
     try:
         cursor.execute("""
             INSERT INTO users (name, phone, email)
@@ -57,16 +57,21 @@ def register_user(user: UserIn):
         result = cursor.fetchone()
 
         if not result:
+            # already exists
             cursor.execute("""
                 SELECT id, name, phone, email, created_at
-                FROM users
-                WHERE phone = %s OR email = %s
+                FROM users WHERE phone = %s OR email = %s
             """, (user.phone, user.email))
             result = cursor.fetchone()
 
         conn.commit()
-        return {"message": "✅ User registered successfully", "user": result}
-
+        return {"message": "✅ User registered successfully", "user": {
+            "id": result[0],
+            "name": result[1],
+            "phone": result[2],
+            "email": result[3],
+            "created_at": result[4],
+        }}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -76,16 +81,16 @@ def register_user(user: UserIn):
 
 
 @app.post("/login_user")
-def login_user(phone: Optional[str] = None, email: Optional[str] = None):
-    """Simple passwordless login by phone/email"""
+def login_user(phone: str | None = None, email: str | None = None):
+    """Login using phone or email"""
     if not phone and not email:
         raise HTTPException(status_code=400, detail="Provide phone or email")
 
     conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, name, phone, email FROM users
-        WHERE phone = %s OR email = %s
+        SELECT id, name, phone, email, created_at
+        FROM users WHERE phone = %s OR email = %s
     """, (phone, email))
     user = cursor.fetchone()
     cursor.close()
@@ -94,7 +99,13 @@ def login_user(phone: Optional[str] = None, email: Optional[str] = None):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return {"message": "✅ Login successful", "user": user}
+    return {"message": "✅ Login successful", "user": {
+        "id": user[0],
+        "name": user[1],
+        "phone": user[2],
+        "email": user[3],
+        "created_at": user[4],
+    }}
 
 
 # ================================================
