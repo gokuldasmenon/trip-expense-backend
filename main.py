@@ -48,36 +48,53 @@ def register_user(user: UserIn):
     conn = get_connection()
     cursor = conn.cursor()
     try:
+        # Check if user already exists (by phone or email)
+        cursor.execute("""
+            SELECT id, name, phone, email, created_at
+            FROM users
+            WHERE phone = %s OR email = %s
+        """, (user.phone, user.email))
+        existing = cursor.fetchone()
+
+        if existing:
+            return {
+                "message": "User already registered",
+                "user": {
+                    "id": existing[0],
+                    "name": existing[1],
+                    "phone": existing[2],
+                    "email": existing[3],
+                    "created_at": existing[4],
+                },
+            }
+
+        # Otherwise, insert a new record
         cursor.execute("""
             INSERT INTO users (name, phone, email)
             VALUES (%s, %s, %s)
-            ON CONFLICT (phone, email) DO NOTHING
             RETURNING id, name, phone, email, created_at
         """, (user.name, user.phone, user.email))
         result = cursor.fetchone()
 
-        if not result:
-            # already exists
-            cursor.execute("""
-                SELECT id, name, phone, email, created_at
-                FROM users WHERE phone = %s OR email = %s
-            """, (user.phone, user.email))
-            result = cursor.fetchone()
-
         conn.commit()
-        return {"message": "✅ User registered successfully", "user": {
-            "id": result[0],
-            "name": result[1],
-            "phone": result[2],
-            "email": result[3],
-            "created_at": result[4],
-        }}
+        return {
+            "message": "✅ User registered successfully",
+            "user": {
+                "id": result[0],
+                "name": result[1],
+                "phone": result[2],
+                "email": result[3],
+                "created_at": result[4],
+            },
+        }
+
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
+
 
 
 @app.post("/login_user")
