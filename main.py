@@ -99,17 +99,30 @@ def register_user(user: UserIn):
 
 
 
+from fastapi import Request, Query
+
 @app.post("/login_user")
-def login_user(user: dict):
+async def login_user(
+    request: Request,
+    phone: str | None = Query(None),
+    email: str | None = Query(None)
+):
     """
-    User login with phone or email (email optional).
-    Requires prior registration in 'users' table.
+    Flexible login:
+    - Accepts JSON body {"phone": "..."} from frontend
+    - OR query parameters ?phone=...
     """
-    phone = user.get("phone")
-    email = user.get("email")
+
+    # 🧩 Try to parse body first (if any)
+    try:
+        body = await request.json()
+        phone = phone or body.get("phone")
+        email = email or body.get("email")
+    except Exception:
+        pass  # No JSON body, ignore
 
     if not phone and not email:
-        raise HTTPException(status_code=400, detail="Provide either phone or email to login")
+        raise HTTPException(status_code=400, detail="Provide phone or email to login")
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -128,7 +141,7 @@ def login_user(user: dict):
     if not user_data:
         raise HTTPException(status_code=404, detail="User not registered. Please register first.")
 
-    # ✅ Convert any datetime to string (avoid JSON serialization error)
+    # ✅ Convert datetime fields to string (safe JSON)
     from datetime import datetime
     for key, value in user_data.items():
         if isinstance(value, datetime):
@@ -138,6 +151,7 @@ def login_user(user: dict):
         "message": "✅ Login successful",
         "user": user_data
     }
+
 
 
 
