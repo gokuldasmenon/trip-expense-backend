@@ -184,58 +184,65 @@ def add_trip(trip: TripIn):
 
 
 @app.post("/join_trip/{access_code}")
-def join_trip(access_code: str, user_id: int, request: Request = None):
+def join_trip(access_code: str, user_id: int):
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # ✅ 1. Get trip by access code
+        # ✅ Check that user exists
+        cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+        print(f"DEBUG: user found -> {user}")
+
+        # ✅ Find trip
         cursor.execute("""
             SELECT id, name, trip_type, start_date, owner_id, access_code, created_at
             FROM trips
             WHERE access_code = %s
         """, (access_code,))
         trip = cursor.fetchone()
-
         if not trip:
             raise HTTPException(status_code=404, detail="Invalid access code")
 
-        trip_id = trip["id"]
-        owner_id = trip["owner_id"]
+        print(f"DEBUG: trip found -> {trip}")
 
-        # ✅ 2. Determine role
-        role = "owner" if user_id == owner_id else "member"
+        # ✅ Determine role
+        role = "owner" if user_id == trip["owner_id"] else "member"
 
-        print(f"DEBUG: Joining trip_id={trip_id}, user_id={user_id}, role={role}")
+        # ✅ Attempt insert
+        try:
+            cursor.execute("""
+                INSERT INTO trip_members (trip_id, user_id, role)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (trip_id, user_id) DO NOTHING
+            """, (trip["id"], user_id, role))
+            conn.commit()
+            print(f"DEBUG: Insert into trip_members successful for user_id={user_id}")
+        except Exception as db_err:
+            print(f"❌ DB INSERT ERROR: {db_err}")
+            conn.rollback()
+            raise
 
-        # ✅ 3. Insert membership safely
+        # ✅ Fetch updated trip
         cursor.execute("""
-            INSERT INTO trip_members (trip_id, user_id, role)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (trip_id, user_id) DO NOTHING
-        """, (trip_id, user_id, role))
-        conn.commit()
-
-        # ✅ 4. Fetch joined trip info
-        cursor.execute("""
-            SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code, 
+            SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code,
                    t.owner_id, u.name AS owner_name, t.created_at
             FROM trips t
             LEFT JOIN users u ON t.owner_id = u.id
             WHERE t.id = %s
-        """, (trip_id,))
+        """, (trip["id"],))
         trip_data = cursor.fetchone()
 
-        if not trip_data:
-            raise HTTPException(status_code=404, detail="Trip not found after join")
-
-        print(f"DEBUG: Trip data fetched successfully: {trip_data}")
+        print(f"DEBUG: trip_data fetched -> {trip_data}")
 
         cursor.close()
         conn.close()
 
-        # ✅ 5. Return response (safe JSON)
+        # ✅ Safe JSON return
         return {
             "message": "Joined trip successfully",
             "trip": {
@@ -259,6 +266,7 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
             conn.rollback()
             conn.close()
         raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
+
 
 @app.get("/trips/{user_id}")
 def get_user_trips(user_id: int):
