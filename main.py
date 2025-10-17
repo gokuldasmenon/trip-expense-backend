@@ -184,15 +184,12 @@ def add_trip(trip: TripIn):
 
 @app.post("/join_trip/{access_code}")
 def join_trip(access_code: str, user_id: int):
-    """
-    Join a trip using the access code and link the user to trip_members table.
-    """
     conn = get_connection()
     cursor = conn.cursor()
 
-    # ✅ Step 1: Check if trip exists
+    # ✅ Find trip by access code
     cursor.execute("""
-        SELECT id, name, trip_type, start_date, access_code
+        SELECT id, name, trip_type, start_date, owner_id, access_code
         FROM trips
         WHERE access_code = %s
     """, (access_code,))
@@ -200,55 +197,51 @@ def join_trip(access_code: str, user_id: int):
 
     if not trip:
         conn.close()
-        raise HTTPException(status_code=404, detail="Invalid or expired access code")
+        raise HTTPException(status_code=404, detail="Invalid access code")
 
     trip_id = trip[0]
+    owner_id = trip[4]
 
-    # ✅ Step 2: Check if user exists
-    cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
+    # ✅ Determine user role
+    if user_id == owner_id:
+        role = "owner"
+    else:
+        role = "member"
 
-    # ✅ Step 3: Check if already joined
-    cursor.execute("""
-        SELECT COUNT(*) FROM trip_members
-        WHERE trip_id = %s AND user_id = %s
-    """, (trip_id, user_id))
-    if cursor.fetchone()[0] > 0:
-        conn.close()
-        return {
-            "message": "User already joined this trip",
-            "trip": {
-                "id": trip[0],
-                "name": trip[1],
-                "trip_type": trip[2],
-                "start_date": trip[3],
-                "access_code": trip[4],
-            },
-        }
-
-    # ✅ Step 4: Add member
+    # ✅ Ensure trip_members entry exists
     cursor.execute("""
         INSERT INTO trip_members (trip_id, user_id, role)
-        VALUES (%s, %s, 'member')
-    """, (trip_id, user_id))
+        VALUES (%s, %s, %s)
+        ON CONFLICT (trip_id, user_id) DO NOTHING
+    """, (trip_id, user_id, role))
 
     conn.commit()
+
+    # ✅ Return trip + role in response
+    cursor.execute("""
+        SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code, t.owner_id, u.name AS owner_name
+        FROM trips t
+        LEFT JOIN users u ON t.owner_id = u.id
+        WHERE t.id = %s
+    """, (trip_id,))
+    trip_data = cursor.fetchone()
     cursor.close()
     conn.close()
 
     return {
-        "message": f"User {user[1]} joined trip {trip[1]} successfully",
+        "message": "Joined trip successfully",
         "trip": {
-            "id": trip[0],
-            "name": trip[1],
-            "trip_type": trip[2],
-            "start_date": trip[3],
-            "access_code": trip[4],
+            "id": trip_data[0],
+            "name": trip_data[1],
+            "trip_type": trip_data[2],
+            "start_date": trip_data[3],
+            "access_code": trip_data[4],
+            "owner_id": trip_data[5],
+            "owner_name": trip_data[6],
         },
+        "role": role,
     }
+
 @app.get("/trips/{user_id}")
 def get_user_trips(user_id: int):
     """
