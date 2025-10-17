@@ -282,55 +282,42 @@ def join_trip(access_code: str, user_id: int):
         raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
 
 
-@app.get("/trips/{user_id}")
+@app.get("/user_trips/{user_id}")
 def get_user_trips(user_id: int):
     """
-    Fetch trips created by the user (own trips)
-    and trips they have joined via access code.
+    Returns:
+    - own_trips: trips created by the user (owner)
+    - joined_trips: trips joined as a member
     """
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # ✅ Trips created by the user (owner)
-        cursor.execute("""
-            SELECT t.*, u.name AS owner_name
-            FROM trips t
-            LEFT JOIN users u ON t.owner_id = u.id
-            WHERE t.owner_id = %s
-            ORDER BY t.created_at DESC
-        """, (user_id,))
-        own_trips = cursor.fetchall()
+    # 👑 Own trips (where user is owner)
+    cursor.execute("""
+        SELECT id, name, start_date, trip_type, access_code, created_at
+        FROM trips
+        WHERE owner_id = %s
+        ORDER BY created_at DESC
+    """, (user_id,))
+    own_trips = cursor.fetchall()
 
-        # ✅ Trips the user has joined
-        cursor.execute("""
-            SELECT t.*, u.name AS owner_name
-            FROM trips t
-            JOIN trip_members tm ON tm.trip_id = t.id
-            LEFT JOIN users u ON t.owner_id = u.id
-            WHERE tm.user_id = %s
-            ORDER BY t.created_at DESC
-        """, (user_id,))
-        joined_trips = cursor.fetchall()
+    # 👥 Joined trips (through trip_members)
+    cursor.execute("""
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.created_at
+        FROM trips t
+        JOIN trip_members m ON t.id = m.trip_id
+        WHERE m.user_id = %s
+        ORDER BY t.created_at DESC
+    """, (user_id,))
+    joined_trips = cursor.fetchall()
 
-        cursor.close()
-        conn.close()
+    conn.close()
 
-        # ✅ Convert datetime fields to string
-        from datetime import datetime
-        for trip_list in (own_trips, joined_trips):
-            for trip in trip_list:
-                for key, value in trip.items():
-                    if isinstance(value, datetime):
-                        trip[key] = value.isoformat()
+    return {
+        "own_trips": own_trips,
+        "joined_trips": joined_trips
+    }
 
-        return {
-            "own_trips": own_trips,
-            "joined_trips": joined_trips
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 
