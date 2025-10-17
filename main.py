@@ -6,6 +6,7 @@ import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
 from fastapi.responses import JSONResponse
 import psycopg2.extras
+from fastapi import Request
 # Local imports
 from database import get_connection, initialize_database
 from models import (
@@ -183,64 +184,73 @@ def add_trip(trip: TripIn):
 
 
 @app.post("/join_trip/{access_code}")
-def join_trip(access_code: str, user_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
+def join_trip(access_code: str, user_id: int, request: Request = None):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # ✅ Find trip by access code
-    cursor.execute("""
-        SELECT id, name, trip_type, start_date, owner_id, access_code
-        FROM trips
-        WHERE access_code = %s
-    """, (access_code,))
-    trip = cursor.fetchone()
+        # ✅ 1. Fetch trip by access code
+        cursor.execute("""
+            SELECT id, name, trip_type, start_date, owner_id, access_code
+            FROM trips
+            WHERE access_code = %s
+        """, (access_code,))
+        trip = cursor.fetchone()
 
-    if not trip:
+        if not trip:
+            raise HTTPException(status_code=404, detail="Invalid access code")
+
+        trip_id = trip["id"]
+        owner_id = trip["owner_id"]
+
+        # ✅ 2. Determine user role
+        role = "owner" if user_id == owner_id else "member"
+
+        # ✅ 3. Insert or skip duplicate membership
+        cursor.execute("""
+            INSERT INTO trip_members (trip_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (trip_id, user_id) DO NOTHING
+        """, (trip_id, user_id, role))
+        conn.commit()
+
+        # ✅ 4. Retrieve updated trip info
+        cursor.execute("""
+            SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code, 
+                   t.owner_id, u.name AS owner_name, t.created_at
+            FROM trips t
+            LEFT JOIN users u ON t.owner_id = u.id
+            WHERE t.id = %s
+        """, (trip_id,))
+        trip_data = cursor.fetchone()
+
+        # ✅ 5. Close DB safely
+        cursor.close()
         conn.close()
-        raise HTTPException(status_code=404, detail="Invalid access code")
 
-    trip_id = trip[0]
-    owner_id = trip[4]
+        # ✅ 6. Return JSON-safe result
+        return {
+            "message": "Joined trip successfully",
+            "trip": {
+                "id": trip_data["id"],
+                "name": trip_data["name"],
+                "trip_type": trip_data["trip_type"],
+                "start_date": str(trip_data["start_date"]),
+                "access_code": trip_data["access_code"],
+                "owner_id": trip_data["owner_id"],
+                "owner_name": trip_data["owner_name"],
+                "created_at": str(trip_data["created_at"]),
+            },
+            "role": role,
+        }
 
-    # ✅ Determine user role
-    if user_id == owner_id:
-        role = "owner"
-    else:
-        role = "member"
-
-    # ✅ Ensure trip_members entry exists
-    cursor.execute("""
-        INSERT INTO trip_members (trip_id, user_id, role)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (trip_id, user_id) DO NOTHING
-    """, (trip_id, user_id, role))
-
-    conn.commit()
-
-    # ✅ Return trip + role in response
-    cursor.execute("""
-        SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code, t.owner_id, u.name AS owner_name
-        FROM trips t
-        LEFT JOIN users u ON t.owner_id = u.id
-        WHERE t.id = %s
-    """, (trip_id,))
-    trip_data = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    return {
-        "message": "Joined trip successfully",
-        "trip": {
-            "id": trip_data[0],
-            "name": trip_data[1],
-            "trip_type": trip_data[2],
-            "start_date": trip_data[3],
-            "access_code": trip_data[4],
-            "owner_id": trip_data[5],
-            "owner_name": trip_data[6],
-        },
-        "role": role,
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if "conn" in locals():
+            conn.rollback()
+            conn.close()
+        raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
 
 @app.get("/trips/{user_id}")
 def get_user_trips(user_id: int):
