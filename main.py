@@ -99,7 +99,6 @@ def register_user(user: UserIn):
 
 @app.post("/login_user")
 def login_user(phone: str | None = None, email: str | None = None):
-    """Login using phone or email"""
     if not phone and not email:
         raise HTTPException(status_code=400, detail="Provide phone or email")
 
@@ -107,8 +106,10 @@ def login_user(phone: str | None = None, email: str | None = None):
     cursor = conn.cursor()
     cursor.execute("""
         SELECT id, name, phone, email, created_at
-        FROM users WHERE phone = %s OR email = %s
-    """, (phone, email))
+        FROM users
+        WHERE (%s IS NOT NULL AND phone = %s)
+           OR (%s IS NOT NULL AND email = %s)
+    """, (phone, phone, email, email))
     user = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -116,13 +117,17 @@ def login_user(phone: str | None = None, email: str | None = None):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return {"message": "✅ Login successful", "user": {
-        "id": user[0],
-        "name": user[1],
-        "phone": user[2],
-        "email": user[3],
-        "created_at": user[4],
-    }}
+    return {
+        "message": "✅ Login successful",
+        "user": {
+            "id": user[0],
+            "name": user[1],
+            "phone": user[2],
+            "email": user[3],
+            "created_at": user[4],
+        }
+    }
+
 
 
 # ================================================
@@ -134,35 +139,36 @@ def generate_access_code(length=6):
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
-    """Create trip with owner_id and access code"""
     conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor = conn.cursor()
 
-    try:
-        access_code = generate_access_code()
-        cursor.execute("""
-            INSERT INTO trips (name, start_date, trip_type, owner_id, access_code)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id, name, start_date, trip_type, access_code, owner_id
-        """, (trip.name, trip.start_date, trip.trip_type, trip.owner_id, access_code))
-        new_trip = cursor.fetchone()
+    access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-        # Add owner as trip_member
-        cursor.execute("""
-            INSERT INTO trip_members (trip_id, user_id, role)
-            VALUES (%s, %s, 'owner')
-            ON CONFLICT (trip_id, user_id) DO NOTHING
-        """, (new_trip["id"], trip.owner_id))
+    cursor.execute("""
+        INSERT INTO trips (name, start_date, trip_type, access_code, owner_name, owner_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id, name, start_date, trip_type, access_code, owner_name, owner_id, created_at
+    """, (trip.name, trip.start_date, trip.trip_type, access_code, trip.owner_name, trip.owner_id))
 
-        conn.commit()
-        return {"message": "✅ Trip created successfully", "trip": new_trip}
+    new_trip = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
+    return {
+        "message": "Trip created successfully",
+        "trip": {
+            "id": new_trip[0],
+            "name": new_trip[1],
+            "start_date": new_trip[2],
+            "trip_type": new_trip[3],
+            "access_code": new_trip[4],
+            "owner_name": new_trip[5],
+            "owner_id": new_trip[6],
+            "created_at": new_trip[7]
+        }
+    }
+
 
 
 @app.post("/join_trip/{access_code}")

@@ -13,7 +13,9 @@ class TripIn(BaseModel):
     name: str
     start_date: str
     trip_type: str
-    owner_id: int  # new field
+    owner_id: int
+    owner_name: str | None = "Trip Owner"
+
 
 
 # ------------------ FAMILIES ------------------
