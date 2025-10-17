@@ -185,13 +185,14 @@ def add_trip(trip: TripIn):
 
 @app.post("/join_trip/{access_code}")
 def join_trip(access_code: str, user_id: int, request: Request = None):
+    conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # ✅ 1. Fetch trip by access code
+        # ✅ 1. Get trip by access code
         cursor.execute("""
-            SELECT id, name, trip_type, start_date, owner_id, access_code
+            SELECT id, name, trip_type, start_date, owner_id, access_code, created_at
             FROM trips
             WHERE access_code = %s
         """, (access_code,))
@@ -203,10 +204,12 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
         trip_id = trip["id"]
         owner_id = trip["owner_id"]
 
-        # ✅ 2. Determine user role
+        # ✅ 2. Determine role
         role = "owner" if user_id == owner_id else "member"
 
-        # ✅ 3. Insert or skip duplicate membership
+        print(f"DEBUG: Joining trip_id={trip_id}, user_id={user_id}, role={role}")
+
+        # ✅ 3. Insert membership safely
         cursor.execute("""
             INSERT INTO trip_members (trip_id, user_id, role)
             VALUES (%s, %s, %s)
@@ -214,7 +217,7 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
         """, (trip_id, user_id, role))
         conn.commit()
 
-        # ✅ 4. Retrieve updated trip info
+        # ✅ 4. Fetch joined trip info
         cursor.execute("""
             SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code, 
                    t.owner_id, u.name AS owner_name, t.created_at
@@ -224,11 +227,15 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
         """, (trip_id,))
         trip_data = cursor.fetchone()
 
-        # ✅ 5. Close DB safely
+        if not trip_data:
+            raise HTTPException(status_code=404, detail="Trip not found after join")
+
+        print(f"DEBUG: Trip data fetched successfully: {trip_data}")
+
         cursor.close()
         conn.close()
 
-        # ✅ 6. Return JSON-safe result
+        # ✅ 5. Return response (safe JSON)
         return {
             "message": "Joined trip successfully",
             "trip": {
@@ -238,8 +245,8 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
                 "start_date": str(trip_data["start_date"]),
                 "access_code": trip_data["access_code"],
                 "owner_id": trip_data["owner_id"],
-                "owner_name": trip_data["owner_name"],
-                "created_at": str(trip_data["created_at"]),
+                "owner_name": trip_data.get("owner_name", "Unknown"),
+                "created_at": str(trip_data.get("created_at", datetime.now())),
             },
             "role": role,
         }
@@ -247,7 +254,8 @@ def join_trip(access_code: str, user_id: int, request: Request = None):
     except HTTPException:
         raise
     except Exception as e:
-        if "conn" in locals():
+        print(f"❌ ERROR in /join_trip: {e}")
+        if conn:
             conn.rollback()
             conn.close()
         raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
