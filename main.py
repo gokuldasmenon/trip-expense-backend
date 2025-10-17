@@ -1,323 +1,253 @@
-from typing import Optional
-from fastapi import FastAPI, HTTPException
-import psycopg2
-from pydantic import BaseModel
-from models import TripIn, FamilyIn, ExpenseIn, FamilyUpdate, ExpenseUpdate,AdvanceModel
-from database import get_connection, initialize_database
-from services import trips, families, expenses, advances, settlement
-from fastapi.middleware.cors import CORSMiddleware
-import random, string
-from datetime import datetime
-from services import settlement
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+import psycopg2, psycopg2.extras, random, string
+from datetime import datetime
+
+# Local imports
+from database import get_connection, initialize_database
+from models import (
+    TripIn, FamilyIn, ExpenseIn,
+    FamilyUpdate, ExpenseUpdate, AdvanceModel, UserIn
+)
+from services import trips, families, expenses, advances, settlement
+
+# --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
-# ✅ Enable CORS for Flutter app
+# --------------------------------------------
+
+# ✅ Enable CORS for Flutter
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # you can restrict this later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class TripIn(BaseModel):
-    name: str
-    start_date: str
-    trip_type: str
-    created_by: str | None = "Owner"
-    
-# ✅ Initialize database
+# ================================================
+# 🏁 STARTUP + HEALTH CHECK
+# ================================================
 @app.on_event("startup")
 def on_startup():
     initialize_database()
 
-# ✅ Health Check
+
 @app.get("/")
 def home():
-    return {"message": "Expense Tracker Backend Running"}
+    return {"message": "✅ Expense Tracker Backend Running"}
 
-# =========================================================
-# 🚀 TRIPS
-# =========================================================
 
-@app.post("/create_trip")
-def create_trip(trip: dict):
+# ================================================
+# 👥 USERS
+# ================================================
+@app.post("/register_user")
+def register_user(user: UserIn):
+    """Register a user by name, phone, and/or email"""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        name = trip.get("name")
-        start_date = trip.get("start_date")
-        trip_type = trip.get("trip_type")
+        cursor.execute("""
+            INSERT INTO users (name, phone, email)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (phone, email) DO NOTHING
+            RETURNING id, name, phone, email, created_at
+        """, (user.name, user.phone, user.email))
+        result = cursor.fetchone()
 
-        if not name or not start_date or not trip_type:
-            raise HTTPException(status_code=400, detail="Missing required fields")
+        if not result:
+            cursor.execute("""
+                SELECT id, name, phone, email, created_at
+                FROM users
+                WHERE phone = %s OR email = %s
+            """, (user.phone, user.email))
+            result = cursor.fetchone()
 
-        result = trips.add_trip(name, start_date, trip_type)
-        return {
-            "message": "Trip created successfully",
-            "trip_id": result["id"],
-            "code": result["code"],
-        }
+        conn.commit()
+        return {"message": "✅ User registered successfully", "user": result}
+
     except Exception as e:
+        conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/join_trip/{access_code}")
-def join_trip(access_code: str, user_name: str):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT id, name, trip_type, start_date, access_code
-        FROM trips
-        WHERE access_code = %s
-    """, (access_code,))
-    trip = cursor.fetchone()
-
-    if not trip:
-        raise HTTPException(status_code=404, detail="Invalid access code")
-
-    trip_id = trip[0]
-
-    # 👑 Optional: Prevent owner from joining their own trip
-    cursor.execute("""
-        SELECT COUNT(*) FROM trip_participants WHERE trip_id = %s AND user_name = %s
-    """, (trip_id, user_name))
-    if cursor.fetchone()[0] > 0:
+    finally:
+        cursor.close()
         conn.close()
-        return {"message": "User already joined this trip", "trip": {
-            "id": trip[0],
-            "name": trip[1],
-            "trip_type": trip[2],
-            "start_date": trip[3],
-            "access_code": trip[4],
-        }}
 
-    # ✅ Safe insert (no crash even if duplicate)
-    cursor.execute("""
-        INSERT INTO trip_participants (trip_id, user_name)
-        VALUES (%s, %s)
-        ON CONFLICT (trip_id, user_name) DO NOTHING
-    """, (trip_id, user_name))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+@app.post("/login_user")
+def login_user(phone: Optional[str] = None, email: Optional[str] = None):
+    """Simple passwordless login by phone/email"""
+    if not phone and not email:
+        raise HTTPException(status_code=400, detail="Provide phone or email")
 
-    return {"message": "Joined successfully", "trip": {
-        "id": trip[0],
-        "name": trip[1],
-        "trip_type": trip[2],
-        "start_date": trip[3],
-        "access_code": trip[4],
-    }}
-
-@app.get("/participants/{trip_id}")
-def get_participants(trip_id: int):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_name FROM trip_participants WHERE trip_id = %s", (trip_id,))
-    participants = [r[0] for r in cursor.fetchall()]
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT id, name, phone, email FROM users
+        WHERE phone = %s OR email = %s
+    """, (phone, email))
+    user = cursor.fetchone()
     cursor.close()
     conn.close()
-    return {"participants": participants}
 
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "✅ Login successful", "user": user}
+
+
+# ================================================
+# 🧳 TRIPS (with owner + access)
+# ================================================
+def generate_access_code(length=6):
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
+    """Create trip with owner_id and access code"""
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # generate a random access code
-    import random, string
-    access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    try:
+        access_code = generate_access_code()
+        cursor.execute("""
+            INSERT INTO trips (name, start_date, trip_type, owner_id, access_code)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, name, start_date, trip_type, access_code, owner_id
+        """, (trip.name, trip.start_date, trip.trip_type, trip.owner_id, access_code))
+        new_trip = cursor.fetchone()
 
-    # assign default owner name if not passed
-    owner_name = getattr(trip, "owner_name", "Trip Owner")
+        # Add owner as trip_member
+        cursor.execute("""
+            INSERT INTO trip_members (trip_id, user_id, role)
+            VALUES (%s, %s, 'owner')
+            ON CONFLICT (trip_id, user_id) DO NOTHING
+        """, (new_trip["id"], trip.owner_id))
 
-    cursor.execute("""
-        INSERT INTO trips (name, start_date, trip_type, access_code, owner_name)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING id, name, start_date, trip_type, access_code, owner_name, created_at
-    """, (trip.name, trip.start_date, trip.trip_type, access_code, owner_name))
+        conn.commit()
+        return {"message": "✅ Trip created successfully", "trip": new_trip}
 
-    new_trip = cursor.fetchone()
-    conn.commit()
-    cursor.close()
-    conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
-    return {
-        "message": "Trip created successfully",
-        "trip": {
-            "id": new_trip[0],
-            "name": new_trip[1],
-            "start_date": new_trip[2],
-            "trip_type": new_trip[3],
-            "access_code": new_trip[4],
-            "owner_name": new_trip[5],
-            "created_at": new_trip[6]
-        }
-    }
+
+@app.post("/join_trip/{access_code}")
+def join_trip(access_code: str, user_id: int = Query(...)):
+    """Join existing trip using access code"""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cursor.execute("SELECT id, name, start_date, trip_type FROM trips WHERE access_code = %s", (access_code,))
+        trip = cursor.fetchone()
+        if not trip:
+            raise HTTPException(status_code=404, detail="Invalid access code")
+
+        cursor.execute("""
+            INSERT INTO trip_members (trip_id, user_id, role)
+            VALUES (%s, %s, 'member')
+            ON CONFLICT (trip_id, user_id) DO NOTHING
+        """, (trip["id"], user_id))
+
+        conn.commit()
+        return {"message": "✅ Joined trip successfully", "trip": trip}
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.get("/trips")
 def get_trips():
     return trips.get_all_trips()
 
-@app.get("/trips")
-def get_active_trips():
-    return trips.get_all_trips()
 
 @app.get("/archived_trips")
 def get_archived_trips():
     return trips.get_archived_trips()
 
+
 @app.put("/trips/archive/{trip_id}")
 def archive_trip(trip_id: int):
     return trips.archive_trip(trip_id)
+
 
 @app.put("/trips/restore/{trip_id}")
 def restore_trip(trip_id: int):
     return trips.restore_trip(trip_id)
 
+
 @app.delete("/trips/{trip_id}")
 def delete_trip(trip_id: int):
     return trips.delete_trip(trip_id)
 
-# =========================================================
-# 👨‍👩‍👧 FAMILIES
-# =========================================================
 
+# ================================================
+# 👨‍👩‍👧 FAMILIES / 💰 EXPENSES / 💸 ADVANCES / 📊 REPORTS
+# ================================================
 @app.post("/add_family")
 def add_family(family: FamilyIn):
     return families.add_family(family.trip_id, family.family_name, family.members_count)
+
 
 @app.get("/families/{trip_id}")
 def get_families(trip_id: int):
     return families.get_families(trip_id)
 
+
 @app.put("/update_family/{family_id}")
 def update_family(family_id: int, family: FamilyUpdate):
     return families.update_family(family_id, family.family_name, family.members_count)
+
 
 @app.delete("/delete_family/{family_id}")
 def delete_family(family_id: int):
     return families.delete_family(family_id)
 
-# =========================================================
-# 💰 EXPENSES
-# =========================================================
 
 @app.post("/add_expense")
 def add_expense(expense: ExpenseIn):
-    return expenses.add_expense(
-        expense.trip_id,
-        expense.payer_id,
-        expense.name,
-        expense.amount,
-        expense.date
-    )
+    return expenses.add_expense(expense.trip_id, expense.payer_id, expense.name, expense.amount, expense.date)
+
 
 @app.get("/get_expenses/{trip_id}")
 def get_expenses(trip_id: int):
     return {"expenses": expenses.get_expenses(trip_id)}
 
+
 @app.put("/update_expense/{expense_id}")
 def update_expense(expense_id: int, expense: ExpenseUpdate):
-    return expenses.update_expense(
-        expense_id,
-        expense.payer_id,
-        expense.name,
-        expense.amount,
-        expense.date
-    )
+    return expenses.update_expense(expense_id, expense.payer_id, expense.name, expense.amount, expense.date)
+
 
 @app.delete("/delete_expense/{expense_id}")
 def delete_expense(expense_id: int):
     return expenses.delete_expense(expense_id)
 
-# =========================================================
-# 💸 ADVANCES
-# =========================================================
 
 @app.post("/add_advance")
-def add_advance(advance: AdvanceModel):   # ✅ reference from models, not advances
-    return advances.add_advance(
-        advance.trip_id,
-        advance.payer_family_id,
-        advance.receiver_family_id,
-        advance.amount,
-        advance.date
-    )
+def add_advance(advance: AdvanceModel):
+    return advances.add_advance(advance.trip_id, advance.payer_family_id, advance.receiver_family_id, advance.amount, advance.date)
 
 
-@app.get("/advances/{trip_id}") 
+@app.get("/advances/{trip_id}")
 def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
 
-# =========================================================
-# 🧾 SETTLEMENT / REPORT
-# =========================================================
 
 @app.get("/settlement/{trip_id}")
 def get_settlement(trip_id: int):
     return settlement.get_settlement(trip_id)
 
-@app.get("/sync_settlement/{trip_id}")
-def sync_settlement(trip_id: int, last_sync: Optional[str] = None):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    # If no last_sync provided, always send settlement
-    if not last_sync:
-        cursor.close()
-        conn.close()
-        from services import settlement
-        data = settlement.get_settlement(trip_id)
-        return {"changed": True, "data": data, "last_sync": datetime.now().isoformat()}
-
-    cursor.execute("""
-        SELECT GREATEST(
-            COALESCE(MAX(t.updated_at), '1970-01-01'),
-            COALESCE(MAX(f.updated_at), '1970-01-01'),
-            COALESCE(MAX(e.updated_at), '1970-01-01'),
-            COALESCE(MAX(a.updated_at), '1970-01-01')
-        ) AS latest_update
-        FROM trips t
-        LEFT JOIN family_details f ON f.trip_id = t.id
-        LEFT JOIN expenses e ON e.trip_id = t.id
-        LEFT JOIN advances a ON a.trip_id = t.id
-        WHERE t.id = %s
-    """, (trip_id,))
-    latest = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-
-    last_sync_dt = datetime.fromisoformat(last_sync)
-    if latest > last_sync_dt:
-        from services import settlement
-        data = settlement.get_settlement(trip_id)
-        return {"changed": True, "data": data, "last_sync": datetime.now().isoformat()}
-    else:
-        # 🟢 Fix: send cached settlement even if no new change
-        from services import settlement
-        data = settlement.get_settlement(trip_id)
-        return {"changed": False, "data": data, "last_sync": last_sync}
-
 
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
-@app.get("/version")
-def version():
-    return {"version": "v1.1 - auto deploy test"}
-
-@app.get("/trip/{trip_id}")
-def get_trip(trip_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("SELECT * FROM trips WHERE id = %s", (trip_id,))
-    trip = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
-    return trip
