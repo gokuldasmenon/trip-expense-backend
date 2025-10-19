@@ -280,7 +280,40 @@ def join_trip(access_code: str, user_id: int):
             conn.rollback()
             conn.close()
         raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
+@app.get("/trips/{user_id}")
+def get_trips_for_user(user_id: int):
+    """
+    Returns only the trips owned by or joined by the given user_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    # 👑 Trips created (owned) by the user
+    cursor.execute("""
+        SELECT id, name, start_date, trip_type, access_code, owner_name, created_at
+        FROM trips
+        WHERE owner_id = %s
+        ORDER BY id DESC
+    """, (user_id,))
+    own_trips = cursor.fetchall()
+
+    # 🤝 Trips joined by the user
+    cursor.execute("""
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
+        FROM trips t
+        INNER JOIN trip_members tm ON tm.trip_id = t.id
+        WHERE tm.user_id = %s
+        ORDER BY t.id DESC
+    """, (user_id,))
+    joined_trips = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return {
+        "own_trips": own_trips,
+        "joined_trips": joined_trips
+    }
 
 @app.get("/user_trips/{user_id}")
 def get_user_trips(user_id: int):
