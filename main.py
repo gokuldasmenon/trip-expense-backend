@@ -102,27 +102,17 @@ def register_user(user: UserIn):
 from fastapi import Request, Query
 
 @app.post("/login_user")
-async def login_user(
-    request: Request,
-    phone: str | None = Query(None),
-    email: str | None = Query(None)
-):
+async def login_user(request: Request):
     """
-    Flexible login:
-    - Accepts JSON body {"phone": "..."} from frontend
-    - OR query parameters ?phone=...
+    Login using either phone or email.
+    Accepts JSON body: {"phone": "...", "email": "..."}.
     """
-
-    # 🧩 Try to parse body first (if any)
-    try:
-        body = await request.json()
-        phone = phone or body.get("phone")
-        email = email or body.get("email")
-    except Exception:
-        pass  # No JSON body, ignore
+    data = await request.json()
+    phone = data.get("phone")
+    email = data.get("email")
 
     if not phone and not email:
-        raise HTTPException(status_code=400, detail="Provide phone or email to login")
+        raise HTTPException(status_code=400, detail="Provide either phone or email")
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -134,29 +124,26 @@ async def login_user(
            OR (%s IS NOT NULL AND email = %s)
     """, (phone, phone, email, email))
 
-    user_data = cursor.fetchone()
+    user = cursor.fetchone()
     cursor.close()
     conn.close()
 
-    if not user_data:
-        raise HTTPException(status_code=404, detail="User not registered. Please register first.")
+    if not user:
+        raise HTTPException(status_code=404, detail="User not registered")
 
-    # ✅ Convert datetime fields to string (safe JSON)
-    from datetime import datetime
-    for key, value in user_data.items():
-        if isinstance(value, datetime):
-            user_data[key] = value.isoformat()
+    # Format datetime safely
+    for key, val in user.items():
+        if isinstance(val, datetime):
+            user[key] = val.isoformat()
 
-    return {
-        "message": "✅ Login successful",
-        "user": user_data
-    }
+    return {"message": "✅ Login successful", "user": user}
 
 
 
 
 
-# ================================================
+
+# ================================================f
 # 🧳 TRIPS (with owner + access)
 # ================================================
 def generate_access_code(length=6):
