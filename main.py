@@ -168,7 +168,7 @@ def add_trip(trip: TripIn):
     conn = get_connection()
     cursor = conn.cursor()
 
-    access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    access_code = generate_access_code()
 
     cursor.execute("""
         INSERT INTO trips (name, start_date, trip_type, access_code, owner_name, owner_id)
@@ -191,104 +191,50 @@ def add_trip(trip: TripIn):
             "access_code": new_trip[4],
             "owner_name": new_trip[5],
             "owner_id": new_trip[6],
-            "created_at": new_trip[7]
-        }
+            "created_at": new_trip[7],
+        },
     }
 
 
 
 @app.post("/join_trip/{access_code}")
 def join_trip(access_code: str, user_id: int):
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-        # ✅ Check that user exists
-        cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-
-        print(f"DEBUG: user found -> {user}")
-
-        # ✅ Find trip
-        cursor.execute("""
-            SELECT id, name, trip_type, start_date, owner_id, access_code, created_at
-            FROM trips
-            WHERE access_code = %s
-        """, (access_code,))
-        trip = cursor.fetchone()
-        if not trip:
-            raise HTTPException(status_code=404, detail="Invalid access code")
-
-        print(f"DEBUG: trip found -> {trip}")
-
-        # ✅ Determine role
-        role = "owner" if user_id == trip["owner_id"] else "member"
-
-        # ✅ Attempt insert
-        try:
-            cursor.execute("""
-                INSERT INTO trip_members (trip_id, user_id, role)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (trip_id, user_id) DO NOTHING
-            """, (trip["id"], user_id, role))
-            conn.commit()
-            print(f"DEBUG: Insert into trip_members successful for user_id={user_id}")
-        except Exception as db_err:
-            print(f"❌ DB INSERT ERROR: {db_err}")
-            conn.rollback()
-            raise
-
-        # ✅ Fetch updated trip
-        cursor.execute("""
-            SELECT t.id, t.name, t.trip_type, t.start_date, t.access_code,
-                   t.owner_id, u.name AS owner_name, t.created_at
-            FROM trips t
-            LEFT JOIN users u ON t.owner_id = u.id
-            WHERE t.id = %s
-        """, (trip["id"],))
-        trip_data = cursor.fetchone()
-
-        print(f"DEBUG: trip_data fetched -> {trip_data}")
-
-        cursor.close()
-        conn.close()
-
-        # ✅ Safe JSON return
-        return {
-            "message": "Joined trip successfully",
-            "trip": {
-                "id": trip_data["id"],
-                "name": trip_data["name"],
-                "trip_type": trip_data["trip_type"],
-                "start_date": str(trip_data["start_date"]),
-                "access_code": trip_data["access_code"],
-                "owner_id": trip_data["owner_id"],
-                "owner_name": trip_data.get("owner_name", "Unknown"),
-                "created_at": str(trip_data.get("created_at", datetime.now())),
-            },
-            "role": role,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ ERROR in /join_trip: {e}")
-        if conn:
-            conn.rollback()
-            conn.close()
-        raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
-@app.get("/trips/{user_id}")
-def get_trips_for_user(user_id: int):
-    """
-    Returns only the trips owned by or joined by the given user_id.
-    """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 👑 Trips created (owned) by the user
+    # ✅ Ensure user exists
+    cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User ID {user_id} not found")
+
+    # ✅ Find trip by access code
+    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
+    trip = cursor.fetchone()
+    if not trip:
+        raise HTTPException(status_code=404, detail="Invalid access code")
+
+    role = "owner" if user_id == trip["owner_id"] else "member"
+
+    # ✅ Insert into trip_members (ignore duplicates)
+    cursor.execute("""
+        INSERT INTO trip_members (trip_id, user_id, role)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (trip_id, user_id) DO NOTHING
+    """, (trip["id"], user_id, role))
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    return {"message": "Joined trip successfully", "trip_id": trip["id"], "role": role}
+@app.get("/trips/{user_id}")
+def get_trips_for_user(user_id: int):
+    """Return only trips owned by or joined by this user."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # 👑 Owned trips
     cursor.execute("""
         SELECT id, name, start_date, trip_type, access_code, owner_name, created_at
         FROM trips
@@ -297,53 +243,18 @@ def get_trips_for_user(user_id: int):
     """, (user_id,))
     own_trips = cursor.fetchall()
 
-    # 🤝 Trips joined by the user
+    # 🤝 Joined trips (member, not owner)
     cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code,
+               t.owner_name, t.created_at
         FROM trips t
-        INNER JOIN trip_members tm ON tm.trip_id = t.id
-        WHERE tm.user_id = %s
+        JOIN trip_members tm ON tm.trip_id = t.id
+        WHERE tm.user_id = %s AND t.owner_id != %s
         ORDER BY t.id DESC
-    """, (user_id,))
+    """, (user_id, user_id))
     joined_trips = cursor.fetchall()
 
     cursor.close()
-    conn.close()
-
-    return {
-        "own_trips": own_trips,
-        "joined_trips": joined_trips
-    }
-
-@app.get("/user_trips/{user_id}")
-def get_user_trips(user_id: int):
-    """
-    Returns:
-    - own_trips: trips created by the user (owner)
-    - joined_trips: trips joined as a member
-    """
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    # 👑 Own trips (where user is owner)
-    cursor.execute("""
-        SELECT id, name, start_date, trip_type, access_code, created_at
-        FROM trips
-        WHERE owner_id = %s
-        ORDER BY created_at DESC
-    """, (user_id,))
-    own_trips = cursor.fetchall()
-
-    # 👥 Joined trips (through trip_members)
-    cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.created_at
-        FROM trips t
-        JOIN trip_members m ON t.id = m.trip_id
-        WHERE m.user_id = %s
-        ORDER BY t.created_at DESC
-    """, (user_id,))
-    joined_trips = cursor.fetchall()
-
     conn.close()
 
     return {
@@ -356,42 +267,28 @@ def get_user_trips(user_id: int):
 
 @app.get("/trip/{trip_id}")
 def get_trip(trip_id: int):
-    """
-    Fetch a single trip by ID (joins owner info for better response)
-    """
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    """Fetch a single trip by ID (joins owner info for better response)."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        cursor.execute("""
-            SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code,
-                   t.status, t.owner_id, u.name AS owner_name, t.created_at
-            FROM public.trips t
-            LEFT JOIN public.users u ON t.owner_id = u.id
-            WHERE t.id = %s
-        """, (trip_id,))
+    cursor.execute("""
+        SELECT t.*, u.name AS owner_name
+        FROM trips t
+        LEFT JOIN users u ON t.owner_id = u.id
+        WHERE t.id = %s
+    """, (trip_id,))
+    trip = cursor.fetchone()
+    cursor.close()
+    conn.close()
 
-        trip = cursor.fetchone()
-        cursor.close()
-        conn.close()
+    if not trip:
+        raise HTTPException(status_code=404, detail=f"Trip with ID {trip_id} not found")
 
-        if not trip:
-            raise HTTPException(status_code=404, detail=f"Trip with ID {trip_id} not found")
+    for key, value in trip.items():
+        if isinstance(value, datetime):
+            trip[key] = value.isoformat()
 
-        # ✅ Convert any datetime fields to strings (ISO format)
-        for key, value in trip.items():
-            if isinstance(value, datetime):
-                trip[key] = value.isoformat()
-
-        return JSONResponse(content=dict(trip), status_code=200)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# @app.get("/trips")
-# def get_trips():
-#     return trips.get_all_trips()
+    return JSONResponse(content=dict(trip))
 
 @app.get("/trips")
 def get_all_trips():
