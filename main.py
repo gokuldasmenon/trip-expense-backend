@@ -324,7 +324,7 @@ def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
 
 
-@app.get("/settlement/{trip_id}")
+@app.get("/sync_settlement/{trip_id}")
 def get_settlement(trip_id: int):
     return settlement.get_settlement(trip_id)
 
