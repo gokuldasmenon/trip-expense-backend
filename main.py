@@ -104,12 +104,13 @@ from fastapi import Request, Query
 @app.post("/login_user")
 async def login_user(request: Request):
     """
-    Login using either phone or email.
-    Accepts JSON body: {"phone": "...", "email": "..."}.
+    Login by phone or email.
+    If user not found, auto-register them.
     """
     data = await request.json()
     phone = data.get("phone")
     email = data.get("email")
+    name = data.get("name") or "User"
 
     if not phone and not email:
         raise HTTPException(status_code=400, detail="Provide either phone or email")
@@ -123,18 +124,25 @@ async def login_user(request: Request):
         WHERE (%s IS NOT NULL AND phone = %s)
            OR (%s IS NOT NULL AND email = %s)
     """, (phone, phone, email, email))
-
     user = cursor.fetchone()
+
+    # 🟩 Auto-register if not found
+    if not user:
+        cursor.execute("""
+            INSERT INTO users (name, phone, email)
+            VALUES (%s, %s, %s)
+            RETURNING id, name, phone, email, created_at
+        """, (name, phone, email))
+        user = cursor.fetchone()
+        conn.commit()
+
     cursor.close()
     conn.close()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not registered")
-
     # Format datetime safely
-    for key, val in user.items():
-        if isinstance(val, datetime):
-            user[key] = val.isoformat()
+    for k, v in user.items():
+        if isinstance(v, datetime):
+            user[k] = v.isoformat()
 
     return {"message": "✅ Login successful", "user": user}
 
