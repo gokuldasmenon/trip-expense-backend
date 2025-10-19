@@ -329,7 +329,18 @@ def get_settlement(trip_id: int):
 
 @app.get("/sync_settlement/{trip_id}")
 def sync_settlement(trip_id: int):
-    return settlement.get_settlement(trip_id)
+    """
+    Returns settlement in format expected by Flutter.
+    Includes timestamp and wraps settlement data inside "data".
+    """
+    try:
+        result = settlement.get_settlement(trip_id)
+        return {
+            "data": result,
+            "last_sync": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Settlement sync failed: {e}")
 
 
 @app.get("/trip_summary/{trip_id}")
