@@ -1,20 +1,18 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
+from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
-from fastapi.responses import JSONResponse
-import psycopg2.extras
-from fastapi import Request
+from typing import Optional
+
 # Local imports
 from database import get_connection, initialize_database
 from models import (
     TripIn, FamilyIn, ExpenseIn,
-    FamilyUpdate, ExpenseUpdate, AdvanceModel, UserIn
+    FamilyUpdate, ExpenseUpdate, AdvanceModel
 )
 from services import trips, families, expenses, advances, settlement
-from datetime import datetime
+
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
@@ -44,70 +42,17 @@ def home():
 # ================================================
 # 👥 USERS
 # ================================================
-@app.post("/register_user")
-def register_user(user: UserIn):
-    """Register user by name, phone, and/or email."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        # Check if user already exists (by phone or email)
-        cursor.execute("""
-            SELECT id, name, phone, email, created_at
-            FROM users
-            WHERE phone = %s OR email = %s
-        """, (user.phone, user.email))
-        existing = cursor.fetchone()
-
-        if existing:
-            return {
-                "message": "User already registered",
-                "user": {
-                    "id": existing[0],
-                    "name": existing[1],
-                    "phone": existing[2],
-                    "email": existing[3],
-                    "created_at": existing[4],
-                },
-            }
-
-        # Otherwise, insert a new record
-        cursor.execute("""
-            INSERT INTO users (name, phone, email)
-            VALUES (%s, %s, %s)
-            RETURNING id, name, phone, email, created_at
-        """, (user.name, user.phone, user.email))
-        result = cursor.fetchone()
-
-        conn.commit()
-        return {
-            "message": "✅ User registered successfully",
-            "user": {
-                "id": result[0],
-                "name": result[1],
-                "phone": result[2],
-                "email": result[3],
-                "created_at": result[4],
-            },
-        }
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        cursor.close()
-        conn.close()
-
-
-
-from fastapi import Request, Query
-
 @app.post("/login_user")
 async def login_user(request: Request):
     """
     Login by phone or email.
-    If user not found, auto-register them.
+    If user not found, auto-register them (no manual registration needed).
     """
-    data = await request.json()
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
     phone = data.get("phone")
     email = data.get("email")
     name = data.get("name") or "User"
@@ -118,6 +63,7 @@ async def login_user(request: Request):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    # 🔹 Try to find existing user
     cursor.execute("""
         SELECT id, name, phone, email, created_at
         FROM users
@@ -139,7 +85,7 @@ async def login_user(request: Request):
     cursor.close()
     conn.close()
 
-    # Format datetime safely
+    # Safe datetime serialization
     for k, v in user.items():
         if isinstance(v, datetime):
             user[k] = v.isoformat()
@@ -147,12 +93,8 @@ async def login_user(request: Request):
     return {"message": "✅ Login successful", "user": user}
 
 
-
-
-
-
-# ================================================f
-# 🧳 TRIPS (with owner + access)
+# ================================================
+# 🧳 TRIPS
 # ================================================
 def generate_access_code(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -160,6 +102,9 @@ def generate_access_code(length=6):
 
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
+    """
+    Creates a new trip and auto-registers the owner in trip_members.
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -172,6 +117,14 @@ def add_trip(trip: TripIn):
     """, (trip.name, trip.start_date, trip.trip_type, access_code, trip.owner_name, trip.owner_id))
 
     new_trip = cursor.fetchone()
+
+    # 🟩 Auto-register owner as member
+    cursor.execute("""
+        INSERT INTO trip_members (trip_id, user_id, role)
+        VALUES (%s, %s, 'owner')
+        ON CONFLICT DO NOTHING
+    """, (new_trip[0], trip.owner_id))
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -191,12 +144,10 @@ def add_trip(trip: TripIn):
     }
 
 
-
 @app.post("/join_trip/{access_code}")
 def join_trip(access_code: str, user_id: int):
     """
     Join a trip using access code + user_id.
-    Inserts into trip_members and returns trip details.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -218,41 +169,34 @@ def join_trip(access_code: str, user_id: int):
         if not trip:
             raise HTTPException(status_code=404, detail="Invalid access code")
 
-        # ✅ Determine role
         role = "owner" if user_id == trip["owner_id"] else "member"
 
-        # ✅ Insert into trip_members (safe upsert)
+        # ✅ Insert membership
         cursor.execute("""
             INSERT INTO trip_members (trip_id, user_id, role)
             VALUES (%s, %s, %s)
             ON CONFLICT (trip_id, user_id) DO NOTHING
-            RETURNING id
         """, (trip["id"], user_id, role))
-        inserted = cursor.fetchone()
 
         conn.commit()
+        print(f"DEBUG: Joined trip_id={trip['id']} user_id={user_id} role={role}")
 
-        # ✅ Debug message for clarity
-        print(f"DEBUG: Joined trip_id={trip['id']} by user_id={user_id}, role={role}, inserted={bool(inserted)}")
-
-        return {
-            "message": "Joined trip successfully",
-            "trip": trip,
-            "role": role,
-        }
+        return {"message": "Joined trip successfully", "trip": trip, "role": role}
 
     except Exception as e:
         conn.rollback()
         print(f"❌ ERROR in join_trip: {e}")
-        raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
 
+
 @app.get("/trips/{user_id}")
 def get_trips_for_user(user_id: int):
-    """Return only trips owned by or joined by this user."""
+    """
+    Return trips owned by or joined by this user.
+    """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -265,10 +209,9 @@ def get_trips_for_user(user_id: int):
     """, (user_id,))
     own_trips = cursor.fetchall()
 
-    # 🤝 Joined trips (member, not owner)
+    # 🤝 Joined trips
     cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code,
-               t.owner_name, t.created_at
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
         FROM trips t
         JOIN trip_members tm ON tm.trip_id = t.id
         WHERE tm.user_id = %s AND t.owner_id != %s
@@ -278,56 +221,36 @@ def get_trips_for_user(user_id: int):
 
     cursor.close()
     conn.close()
+    return {"own_trips": own_trips, "joined_trips": joined_trips}
 
-    return {
-        "own_trips": own_trips,
-        "joined_trips": joined_trips
-    }
 
 @app.get("/debug_members")
 def debug_trip_members():
-    """
-    Debug endpoint to list which users are linked to which trips.
-    Useful for verifying join_trip() functionality.
-    """
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    """Show all trip-member relations for debugging."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        cursor.execute("""
-            SELECT 
-                tm.id,
-                tm.trip_id,
-                t.name AS trip_name,
-                tm.user_id,
-                u.name AS user_name,
-                tm.role,
-                tm.joined_at
-            FROM trip_members tm
-            LEFT JOIN trips t ON tm.trip_id = t.id
-            LEFT JOIN users u ON tm.user_id = u.id
-            ORDER BY tm.id DESC
-        """)
+    cursor.execute("""
+        SELECT tm.id, tm.trip_id, t.name AS trip_name,
+               tm.user_id, u.name AS user_name,
+               tm.role, tm.joined_at
+        FROM trip_members tm
+        LEFT JOIN trips t ON tm.trip_id = t.id
+        LEFT JOIN users u ON tm.user_id = u.id
+        ORDER BY tm.id DESC
+    """)
+    members = cursor.fetchall()
+    cursor.close()
+    conn.close()
 
-        members = cursor.fetchall()
-        cursor.close()
-        conn.close()
-
-        return {
-            "count": len(members),
-            "memberships": members
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching memberships: {str(e)}")
+    return {"count": len(members), "memberships": members}
 
 
 @app.get("/trip/{trip_id}")
 def get_trip(trip_id: int):
-    """Fetch a single trip by ID (joins owner info for better response)."""
+    """Fetch single trip with owner info."""
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
     cursor.execute("""
         SELECT t.*, u.name AS owner_name
         FROM trips t
@@ -339,42 +262,13 @@ def get_trip(trip_id: int):
     conn.close()
 
     if not trip:
-        raise HTTPException(status_code=404, detail=f"Trip with ID {trip_id} not found")
+        raise HTTPException(status_code=404, detail="Trip not found")
 
-    for key, value in trip.items():
-        if isinstance(value, datetime):
-            trip[key] = value.isoformat()
+    for k, v in trip.items():
+        if isinstance(v, datetime):
+            trip[k] = v.isoformat()
 
     return JSONResponse(content=dict(trip))
-
-@app.get("/trips")
-def get_all_trips():
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("SELECT * FROM trips ORDER BY id DESC")
-    trips = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return {"trips": trips}
-
-@app.get("/archived_trips")
-def get_archived_trips():
-    return trips.get_archived_trips()
-
-
-@app.put("/trips/archive/{trip_id}")
-def archive_trip(trip_id: int):
-    return trips.archive_trip(trip_id)
-
-
-@app.put("/trips/restore/{trip_id}")
-def restore_trip(trip_id: int):
-    return trips.restore_trip(trip_id)
-
-
-@app.delete("/trips/{trip_id}")
-def delete_trip(trip_id: int):
-    return trips.delete_trip(trip_id)
 
 
 # ================================================
@@ -438,9 +332,3 @@ def get_settlement(trip_id: int):
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
-
-# ================================================
-# 🧪 DEBUG / ADMIN: Trip–User Membership Overview
-# ================================================
-
-
