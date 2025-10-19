@@ -356,10 +356,19 @@ def get_trip(trip_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/trips")
-def get_trips():
-    return trips.get_all_trips()
+# @app.get("/trips")
+# def get_trips():
+#     return trips.get_all_trips()
 
+@app.get("/trips")
+def get_all_trips():
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("SELECT * FROM trips ORDER BY id DESC")
+    trips = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return {"trips": trips}
 
 @app.get("/archived_trips")
 def get_archived_trips():
