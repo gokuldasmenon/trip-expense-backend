@@ -381,3 +381,44 @@ def get_settlement(trip_id: int):
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
+
+# ================================================
+# 🧪 DEBUG / ADMIN: Trip–User Membership Overview
+# ================================================
+
+@app.get("/debug_members")
+def debug_trip_members():
+    """
+    Debug endpoint to list which users are linked to which trips.
+    Useful for verifying join_trip() functionality.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            SELECT 
+                tm.id,
+                tm.trip_id,
+                t.name AS trip_name,
+                tm.user_id,
+                u.name AS user_name,
+                tm.role,
+                tm.joined_at
+            FROM trip_members tm
+            LEFT JOIN trips t ON tm.trip_id = t.id
+            LEFT JOIN users u ON tm.user_id = u.id
+            ORDER BY tm.id DESC
+        """)
+
+        members = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return {
+            "count": len(members),
+            "memberships": members
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching memberships: {str(e)}")
