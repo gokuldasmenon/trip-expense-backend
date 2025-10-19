@@ -199,35 +199,62 @@ def add_trip(trip: TripIn):
 
 @app.post("/join_trip/{access_code}")
 def join_trip(access_code: str, user_id: int):
+    """
+    Join a trip using access code + user_id.
+    Inserts into trip_members and returns trip details.
+    """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # ✅ Ensure user exists
-    cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
-    user = cursor.fetchone()
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User ID {user_id} not found")
+    try:
+        # ✅ Ensure user exists
+        cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-    # ✅ Find trip by access code
-    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
-    trip = cursor.fetchone()
-    if not trip:
-        raise HTTPException(status_code=404, detail="Invalid access code")
+        # ✅ Find trip
+        cursor.execute("""
+            SELECT id, name, start_date, trip_type, access_code, owner_id
+            FROM trips
+            WHERE access_code = %s
+        """, (access_code,))
+        trip = cursor.fetchone()
+        if not trip:
+            raise HTTPException(status_code=404, detail="Invalid access code")
 
-    role = "owner" if user_id == trip["owner_id"] else "member"
+        # ✅ Determine role
+        role = "owner" if user_id == trip["owner_id"] else "member"
 
-    # ✅ Insert into trip_members (ignore duplicates)
-    cursor.execute("""
-        INSERT INTO trip_members (trip_id, user_id, role)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (trip_id, user_id) DO NOTHING
-    """, (trip["id"], user_id, role))
-    conn.commit()
+        # ✅ Insert into trip_members (safe upsert)
+        cursor.execute("""
+            INSERT INTO trip_members (trip_id, user_id, role)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (trip_id, user_id) DO NOTHING
+            RETURNING id
+        """, (trip["id"], user_id, role))
+        inserted = cursor.fetchone()
 
-    cursor.close()
-    conn.close()
+        conn.commit()
 
-    return {"message": "Joined trip successfully", "trip_id": trip["id"], "role": role}
+        # ✅ Debug message for clarity
+        print(f"DEBUG: Joined trip_id={trip['id']} by user_id={user_id}, role={role}, inserted={bool(inserted)}")
+
+        return {
+            "message": "Joined trip successfully",
+            "trip": trip,
+            "role": role,
+        }
+
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ ERROR in join_trip: {e}")
+        raise HTTPException(status_code=500, detail=f"Join trip failed: {str(e)}")
+
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.get("/trips/{user_id}")
 def get_trips_for_user(user_id: int):
     """Return only trips owned by or joined by this user."""
