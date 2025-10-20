@@ -401,9 +401,9 @@ def archive_trip(trip_id: int):
     return trips.archive_trip(trip_id)
 
 @app.delete("/trips/{trip_id}")
-def delete_trip(trip_id: int):
+def delete_trip(trip_id: int): 
     return trips.delete_trip(trip_id)
-
+@app.put("/trips/restore/{trip_id}")
 def restore_trip(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -415,6 +415,7 @@ def restore_trip(trip_id: int):
         cursor.close()
         conn.close()
 
+@app.get("/archived_trips")
 def get_archived_trips():
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
