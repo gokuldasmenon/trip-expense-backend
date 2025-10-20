@@ -390,6 +390,9 @@ def trip_summary(trip_id: int):
 def archive_trip(trip_id: int):
     return trips.archive_trip(trip_id)
 
+@app.delete("/trips/{trip_id}")
+def delete_trip(trip_id: int):
+    return trips.delete_trip(trip_id)
 
 def restore_trip(trip_id: int):
     conn = get_connection()

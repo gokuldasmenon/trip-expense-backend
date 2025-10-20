@@ -101,13 +101,26 @@ def get_archived_trips():
     conn.close()
     return rows
 
-def archive_trip(trip_id):
+def archive_trip(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE trips SET status='Archived' WHERE id=%s", (trip_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "Trip archived successfully"}
+    try:
+        cursor.execute("""
+            UPDATE trips
+            SET status = 'ARCHIVED', updated_at = NOW()
+            WHERE id = %s
+        """, (trip_id,))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return {"message": f"Trip {trip_id} not found or already archived."}
+        conn.commit()
+        return {"message": f"Trip {trip_id} archived successfully."}
+    except Exception as e:
+        conn.rollback()
+        raise Exception(f"Error archiving trip: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 def restore_trip(trip_id):
     conn = get_connection()
@@ -117,12 +130,23 @@ def restore_trip(trip_id):
     conn.close()
     return {"message": "Trip restored successfully"}
 
-def delete_trip(trip_id):
+# ✅ DELETE trip
+def delete_trip(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM expenses WHERE trip_id=%s", (trip_id,))
-    cursor.execute("DELETE FROM family_details WHERE trip_id=%s", (trip_id,))
-    cursor.execute("DELETE FROM trips WHERE id=%s", (trip_id,))
-    conn.commit()
-    conn.close()
-    return {"message": "Trip deleted successfully"}
+    try:
+        cursor.execute("""
+            DELETE FROM trips
+            WHERE id = %s
+        """, (trip_id,))
+        if cursor.rowcount == 0:
+            conn.rollback()
+            return {"message": f"Trip {trip_id} not found."}
+        conn.commit()
+        return {"message": f"Trip {trip_id} deleted successfully."}
+    except Exception as e:
+        conn.rollback()
+        raise Exception(f"Error deleting trip: {e}")
+    finally:
+        cursor.close()
+        conn.close()
