@@ -9,7 +9,7 @@ from typing import Optional
 from database import get_connection, initialize_database
 from models import (
     TripIn, FamilyIn, ExpenseIn,
-    FamilyUpdate, ExpenseUpdate, AdvanceModel
+    FamilyUpdate, ExpenseUpdate, AdvanceModel, UserIn
 )
 from services import trips, families, expenses, advances, settlement
 
@@ -92,6 +92,45 @@ async def login_user(request: Request):
 
     return {"message": "✅ Login successful", "user": user}
 
+@app.post("/register_user")
+def register_user(user: UserIn):
+    """Register user by name, phone, and/or email."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        if not user.phone and not user.email:
+            raise HTTPException(status_code=400, detail="Phone or Email is required.")
+
+        # Check if already exists
+        cursor.execute("""
+            SELECT id, name, phone, email, created_at
+            FROM users
+            WHERE phone = %s OR email = %s
+        """, (user.phone, user.email))
+        existing = cursor.fetchone()
+
+        if existing:
+            return {"message": "User already registered", "user": existing}
+
+        # Insert new
+        cursor.execute("""
+            INSERT INTO users (name, phone, email)
+            VALUES (%s, %s, %s)
+            RETURNING id, name, phone, email, created_at
+        """, (user.name or "User", user.phone, user.email))
+        new_user = cursor.fetchone()
+        conn.commit()
+        return {"message": "✅ User registered successfully", "user": new_user}
+
+    except psycopg2.Error as db_err:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {db_err.pgerror}")
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Registration failed: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
 # ================================================
 # 🧳 TRIPS
@@ -346,3 +385,37 @@ def sync_settlement(trip_id: int):
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
+def archive_trip(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE trips SET status='ARCHIVED' WHERE id=%s", (trip_id,))
+        conn.commit()
+        return {"message": f"Trip {trip_id} archived successfully."}
+    finally:
+        cursor.close()
+        conn.close()
+
+def restore_trip(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE trips SET status='ACTIVE' WHERE id=%s", (trip_id,))
+        conn.commit()
+        return {"message": f"Trip {trip_id} restored successfully."}
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_archived_trips():
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT * FROM trips
+        WHERE status='ARCHIVED'
+        ORDER BY id DESC
+    """)
+    archived = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return {"trips": archived}
