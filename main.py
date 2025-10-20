@@ -234,33 +234,43 @@ def join_trip(access_code: str, user_id: int):
 @app.get("/trips/{user_id}")
 def get_trips_for_user(user_id: int):
     """
-    Return trips owned by or joined by this user.
+    Returns only ACTIVE trips:
+    - own_trips → created by the user
+    - joined_trips → joined by the user (but not owned)
+    Archived trips are excluded.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 👑 Owned trips
+    # 👑 Owned trips (ACTIVE only)
     cursor.execute("""
         SELECT id, name, start_date, trip_type, access_code, owner_name, created_at
         FROM trips
-        WHERE owner_id = %s
+        WHERE owner_id = %s AND (status IS NULL OR status != 'ARCHIVED')
         ORDER BY id DESC
     """, (user_id,))
     own_trips = cursor.fetchall()
 
-    # 🤝 Joined trips
+    # 🤝 Joined trips (ACTIVE only)
     cursor.execute("""
         SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
         FROM trips t
         JOIN trip_members tm ON tm.trip_id = t.id
-        WHERE tm.user_id = %s AND t.owner_id != %s
+        WHERE tm.user_id = %s
+          AND t.owner_id != %s
+          AND (t.status IS NULL OR t.status != 'ARCHIVED')
         ORDER BY t.id DESC
     """, (user_id, user_id))
     joined_trips = cursor.fetchall()
 
     cursor.close()
     conn.close()
-    return {"own_trips": own_trips, "joined_trips": joined_trips}
+
+    return {
+        "own_trips": own_trips,
+        "joined_trips": joined_trips
+    }
+
 
 
 @app.get("/debug_members")
