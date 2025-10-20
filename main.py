@@ -385,16 +385,11 @@ def sync_settlement(trip_id: int):
 @app.get("/trip_summary/{trip_id}")
 def trip_summary(trip_id: int):
     return settlement.get_trip_summary(trip_id)
+
+@app.put("/trips/archive/{trip_id}")
 def archive_trip(trip_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE trips SET status='ARCHIVED' WHERE id=%s", (trip_id,))
-        conn.commit()
-        return {"message": f"Trip {trip_id} archived successfully."}
-    finally:
-        cursor.close()
-        conn.close()
+    return trips.archive_trip(trip_id)
+
 
 def restore_trip(trip_id: int):
     conn = get_connection()
