@@ -101,44 +101,68 @@ async def login_user(request: Request):
 
 
 @app.post("/register_user")
-def register_user(user: UserIn):
-    """Register user by name, phone, and/or email."""
+def register_user(user: dict):
+    """Register a new user or return if exists (by valid phone/email only)."""
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        if not user.phone and not user.email:
+        name = user.get("name", "User")
+        phone = user.get("phone")
+        email = user.get("email")
+
+        if not phone and not email:
             raise HTTPException(status_code=400, detail="Phone or Email is required.")
 
-        # Check if already exists
-        cursor.execute("""
-            SELECT id, name, phone, email, created_at
-            FROM users
-            WHERE phone = %s OR email = %s
-        """, (user.phone, user.email))
+        # 🧹 Normalize blanks to None
+        phone = phone.strip() if phone and phone.strip() else None
+        email = email.strip() if email and email.strip() else None
+
+        # 🔍 Build query dynamically (ignore NULL/blank values)
+        if phone and email:
+            cursor.execute("""
+                SELECT id, name, phone, email, created_at
+                FROM users
+                WHERE phone = %s OR email = %s
+            """, (phone, email))
+        elif phone:
+            cursor.execute("""
+                SELECT id, name, phone, email, created_at
+                FROM users
+                WHERE phone = %s
+            """, (phone,))
+        elif email:
+            cursor.execute("""
+                SELECT id, name, phone, email, created_at
+                FROM users
+                WHERE email = %s
+            """, (email,))
+        else:
+            raise HTTPException(status_code=400, detail="Provide valid phone or email")
+
         existing = cursor.fetchone()
 
-        if existing:
-            return {"message": "User already registered", "user": existing}
+        # 🟢 Create new user if not found
+        if not existing:
+            cursor.execute("""
+                INSERT INTO users (name, phone, email)
+                VALUES (%s, %s, %s)
+                RETURNING id, name, phone, email, created_at
+            """, (name, phone, email))
+            existing = cursor.fetchone()
+            conn.commit()
+            msg = "✅ User registered successfully"
+        else:
+            msg = "User already registered"
 
-        # Insert new
-        cursor.execute("""
-            INSERT INTO users (name, phone, email)
-            VALUES (%s, %s, %s)
-            RETURNING id, name, phone, email, created_at
-        """, (user.name or "User", user.phone, user.email))
-        new_user = cursor.fetchone()
-        conn.commit()
-        return {"message": "✅ User registered successfully", "user": new_user}
+        return {"message": msg, "user": existing}
 
-    except psycopg2.Error as db_err:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {db_err.pgerror}")
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Registration failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
+
 
 # ================================================
 # 🧳 TRIPS
