@@ -63,13 +63,20 @@ async def login_user(request: Request):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 🔹 Try to find existing user
-    cursor.execute("""
-        SELECT id, name, phone, email, created_at
-        FROM users
-        WHERE (%s IS NOT NULL AND phone = %s)
-           OR (%s IS NOT NULL AND email = %s)
-    """, (phone, phone, email, email))
+    # ✅ Only check by provided field
+    if phone:
+        cursor.execute("""
+            SELECT id, name, phone, email, created_at
+            FROM users
+            WHERE phone = %s
+        """, (phone,))
+    else:
+        cursor.execute("""
+            SELECT id, name, phone, email, created_at
+            FROM users
+            WHERE email = %s
+        """, (email,))
+
     user = cursor.fetchone()
 
     # 🟩 Auto-register if not found
@@ -91,6 +98,7 @@ async def login_user(request: Request):
             user[k] = v.isoformat()
 
     return {"message": "✅ Login successful", "user": user}
+
 
 @app.post("/register_user")
 def register_user(user: UserIn):
