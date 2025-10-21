@@ -404,27 +404,9 @@ def archive_trip(trip_id: int):
 def delete_trip(trip_id: int): 
     return trips.delete_trip(trip_id)
 @app.put("/trips/restore/{trip_id}")
-def restore_trip(trip_id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE trips SET status='ACTIVE' WHERE id=%s", (trip_id,))
-        conn.commit()
-        return {"message": f"Trip {trip_id} restored successfully."}
-    finally:
-        cursor.close()
-        conn.close()
+def restore_trip_endpoint(trip_id: int):
+    return trips.restore_trip(trip_id)
 
 @app.get("/archived_trips")
-def get_archived_trips():
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cursor.execute("""
-        SELECT * FROM trips
-        WHERE status='ARCHIVED'
-        ORDER BY id DESC
-    """)
-    archived = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return {"trips": archived}
+def get_archived_trips_endpoint():
+    return trips.get_archived_trips()
