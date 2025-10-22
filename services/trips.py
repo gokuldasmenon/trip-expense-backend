@@ -83,7 +83,8 @@ def get_trips_for_user(user_id: int):
 
     # 👑 Owned trips (exclude archived)
     cursor.execute("""
-        SELECT id, name, start_date, trip_type, access_code, owner_name, created_at
+        SELECT id, name, start_date, trip_type, access_code, owner_name,
+               created_at, mode, billing_cycle
         FROM trips
         WHERE owner_id = %s AND status='ACTIVE'
         ORDER BY id DESC
@@ -92,7 +93,8 @@ def get_trips_for_user(user_id: int):
 
     # 🤝 Joined trips (exclude archived)
     cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name,
+               t.created_at, t.mode, t.billing_cycle
         FROM trips t
         JOIN trip_members tm ON tm.trip_id = t.id
         WHERE tm.user_id = %s AND t.owner_id != %s AND t.status='ACTIVE'
@@ -104,13 +106,6 @@ def get_trips_for_user(user_id: int):
     conn.close()
     return {"own_trips": own_trips, "joined_trips": joined_trips}
 
-def get_trip_by_code(access_code):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trips WHERE access_code = %s", (access_code,))
-    trip = cursor.fetchone()
-    conn.close()
-    return trip
 
 def get_archived_trips():
     conn = get_connection()

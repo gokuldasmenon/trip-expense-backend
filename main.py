@@ -289,23 +289,25 @@ def get_trips_for_user(user_id: int):
     Returns only ACTIVE trips:
     - own_trips → created by the user
     - joined_trips → joined by the user (but not owned)
-    Archived trips are excluded.
+    Includes mode (TRIP/STAY) and billing_cycle.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 👑 Owned trips (ACTIVE only)
+    # 👑 Owned trips
     cursor.execute("""
-        SELECT id, name, start_date, trip_type, access_code, owner_name, created_at
+        SELECT id, name, start_date, trip_type, access_code, owner_name,
+               created_at, mode, billing_cycle
         FROM trips
         WHERE owner_id = %s AND (status IS NULL OR status != 'ARCHIVED')
         ORDER BY id DESC
     """, (user_id,))
     own_trips = cursor.fetchall()
 
-    # 🤝 Joined trips (ACTIVE only)
+    # 🤝 Joined trips
     cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name, t.created_at
+        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name,
+               t.created_at, t.mode, t.billing_cycle
         FROM trips t
         JOIN trip_members tm ON tm.trip_id = t.id
         WHERE tm.user_id = %s
@@ -322,6 +324,7 @@ def get_trips_for_user(user_id: int):
         "own_trips": own_trips,
         "joined_trips": joined_trips
     }
+
 
 
 
