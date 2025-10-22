@@ -174,64 +174,54 @@ def generate_access_code(length=6):
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
     """
-    Creates a new Trip or Stay instance and auto-registers the owner in trip_members.
+    Creates a new trip or stay session.
+    Automatically assigns owner and mode (TRIP/STAY).
     """
     conn = get_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    access_code = generate_access_code()
+    try:
+        access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-    # Default mode is 'TRIP' if not provided
-    trip_mode = getattr(trip, "mode", "TRIP")
+        cursor.execute("""
+            INSERT INTO trips (name, start_date, trip_type, mode, billing_cycle, access_code,
+                               status, owner_name, owner_id)
+            VALUES (%s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s)
+            RETURNING *
+        """, (
+            trip.name,
+            trip.start_date,
+            trip.trip_type,
+            getattr(trip, 'mode', 'TRIP'),            # default TRIP
+            getattr(trip, 'billing_cycle', None),     # optional for STAY
+            access_code,
+            getattr(trip, 'owner_name', 'User'),
+            getattr(trip, 'owner_id', None),
+        ))
 
-    cursor.execute("""
-        INSERT INTO trips (
-            name, start_date, trip_type, access_code, owner_name, owner_id,
-            mode, billing_cycle, end_date, is_active
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
-        RETURNING id, name, start_date, trip_type, access_code, owner_name, owner_id, mode, billing_cycle, end_date, created_at
-    """, (
-        trip.name,
-        trip.start_date,
-        trip.trip_type,
-        access_code,
-        trip.owner_name,
-        trip.owner_id,
-        trip_mode,
-        getattr(trip, "billing_cycle", "MONTHLY"),
-        getattr(trip, "end_date", None)
-    ))
+        new_trip = cursor.fetchone()
+        conn.commit()
 
-    new_trip = cursor.fetchone()
+        # Auto-register owner as member
+        cursor.execute("""
+            INSERT INTO trip_members (trip_id, user_id, role)
+            VALUES (%s, %s, 'owner')
+            ON CONFLICT DO NOTHING
+        """, (new_trip['id'], trip.owner_id))
+        conn.commit()
 
-    # Auto-register owner as member
-    cursor.execute("""
-        INSERT INTO trip_members (trip_id, user_id, role)
-        VALUES (%s, %s, 'owner')
-        ON CONFLICT DO NOTHING
-    """, (new_trip[0], trip.owner_id))
+        return {
+            "message": "Session created successfully",
+            "trip": new_trip
+        }
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Trip creation failed: {e}")
+    finally:
+        cursor.close()
+        conn.close()
 
-    return {
-        "message": f"{'Stay' if trip_mode == 'STAY' else 'Trip'} created successfully",
-        "trip": {
-            "id": new_trip[0],
-            "name": new_trip[1],
-            "start_date": new_trip[2],
-            "trip_type": new_trip[3],
-            "access_code": new_trip[4],
-            "owner_name": new_trip[5],
-            "owner_id": new_trip[6],
-            "mode": new_trip[7],
-            "billing_cycle": new_trip[8],
-            "end_date": new_trip[9],
-            "created_at": new_trip[10],
-        },
-    }
 
 
 

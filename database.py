@@ -44,8 +44,13 @@ def initialize_database():
         name TEXT NOT NULL,
         start_date TEXT,
         trip_type TEXT,
+        mode TEXT DEFAULT 'TRIP',              -- 🆕 Trip/Stay mode
+        billing_cycle TEXT,                    -- 🆕 For STAY (optional)
         access_code TEXT UNIQUE,
         status TEXT DEFAULT 'ACTIVE',
+        owner_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        owner_name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
