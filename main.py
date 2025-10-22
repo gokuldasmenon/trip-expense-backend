@@ -284,46 +284,17 @@ def join_trip(access_code: str, user_id: int):
 
 
 @app.get("/trips/{user_id}")
-def get_trips_for_user(user_id: int):
+def get_trips_for_user_endpoint(user_id: int):
     """
-    Returns only ACTIVE trips:
-    - own_trips → created by the user
-    - joined_trips → joined by the user (but not owned)
-    Includes mode (TRIP/STAY) and billing_cycle.
+    API endpoint: returns all ACTIVE trips (own + joined) for a user.
+    Delegates logic to trips.get_trips_for_user() in services/trips.py.
     """
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        result = trips.get_trips_for_user(user_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching trips: {e}")
 
-    # 👑 Owned trips
-    cursor.execute("""
-        SELECT id, name, start_date, trip_type, access_code, owner_name,
-               created_at, mode, billing_cycle
-        FROM trips
-        WHERE owner_id = %s AND (status IS NULL OR status != 'ARCHIVED')
-        ORDER BY id DESC
-    """, (user_id,))
-    own_trips = cursor.fetchall()
-
-    # 🤝 Joined trips
-    cursor.execute("""
-        SELECT t.id, t.name, t.start_date, t.trip_type, t.access_code, t.owner_name,
-               t.created_at, t.mode, t.billing_cycle
-        FROM trips t
-        JOIN trip_members tm ON tm.trip_id = t.id
-        WHERE tm.user_id = %s
-          AND t.owner_id != %s
-          AND (t.status IS NULL OR t.status != 'ARCHIVED')
-        ORDER BY t.id DESC
-    """, (user_id, user_id))
-    joined_trips = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    return {
-        "own_trips": own_trips,
-        "joined_trips": joined_trips
-    }
 
 
 
