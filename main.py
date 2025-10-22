@@ -174,22 +174,38 @@ def generate_access_code(length=6):
 @app.post("/add_trip")
 def add_trip(trip: TripIn):
     """
-    Creates a new trip and auto-registers the owner in trip_members.
+    Creates a new Trip or Stay instance and auto-registers the owner in trip_members.
     """
     conn = get_connection()
     cursor = conn.cursor()
 
     access_code = generate_access_code()
 
+    # Default mode is 'TRIP' if not provided
+    trip_mode = getattr(trip, "mode", "TRIP")
+
     cursor.execute("""
-        INSERT INTO trips (name, start_date, trip_type, access_code, owner_name, owner_id)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id, name, start_date, trip_type, access_code, owner_name, owner_id, created_at
-    """, (trip.name, trip.start_date, trip.trip_type, access_code, trip.owner_name, trip.owner_id))
+        INSERT INTO trips (
+            name, start_date, trip_type, access_code, owner_name, owner_id,
+            mode, billing_cycle, end_date, is_active
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+        RETURNING id, name, start_date, trip_type, access_code, owner_name, owner_id, mode, billing_cycle, end_date, created_at
+    """, (
+        trip.name,
+        trip.start_date,
+        trip.trip_type,
+        access_code,
+        trip.owner_name,
+        trip.owner_id,
+        trip_mode,
+        getattr(trip, "billing_cycle", "MONTHLY"),
+        getattr(trip, "end_date", None)
+    ))
 
     new_trip = cursor.fetchone()
 
-    # 🟩 Auto-register owner as member
+    # Auto-register owner as member
     cursor.execute("""
         INSERT INTO trip_members (trip_id, user_id, role)
         VALUES (%s, %s, 'owner')
@@ -201,7 +217,7 @@ def add_trip(trip: TripIn):
     conn.close()
 
     return {
-        "message": "Trip created successfully",
+        "message": f"{'Stay' if trip_mode == 'STAY' else 'Trip'} created successfully",
         "trip": {
             "id": new_trip[0],
             "name": new_trip[1],
@@ -210,9 +226,13 @@ def add_trip(trip: TripIn):
             "access_code": new_trip[4],
             "owner_name": new_trip[5],
             "owner_id": new_trip[6],
-            "created_at": new_trip[7],
+            "mode": new_trip[7],
+            "billing_cycle": new_trip[8],
+            "end_date": new_trip[9],
+            "created_at": new_trip[10],
         },
     }
+
 
 
 @app.post("/join_trip/{access_code}")

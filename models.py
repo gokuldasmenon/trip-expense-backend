@@ -11,10 +11,13 @@ class UserIn(BaseModel):
 # ------------------ TRIPS ------------------
 class TripIn(BaseModel):
     name: str
-    start_date: str
-    trip_type: str
-    owner_id: int
-    owner_name: str | None = "Trip Owner"
+    start_date: Optional[str] = None
+    trip_type: Optional[str] = None
+    owner_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    mode: Optional[str] = "TRIP"          # new field: TRIP or STAY
+    billing_cycle: Optional[str] = "MONTHLY"
+    end_date: Optional[str] = None
 
 
 
