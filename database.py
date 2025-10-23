@@ -91,11 +91,6 @@ def initialize_database():
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
         # ✅ Stay Settlements Table
     cur.execute("""
     CREATE TABLE IF NOT EXISTS stay_settlements (
@@ -124,4 +119,10 @@ def initialize_database():
     );
     """)
 
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    
 
