@@ -96,3 +96,32 @@ def initialize_database():
     cur.close()
     conn.close()
 
+        # ✅ Stay Settlements Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stay_settlements (
+        id SERIAL PRIMARY KEY,
+        trip_id INTEGER REFERENCES trips(id) ON DELETE CASCADE,
+        mode TEXT DEFAULT 'STAY',
+        period_start DATE,
+        period_end DATE,
+        total_expense NUMERIC(12,2),
+        per_head_cost NUMERIC(12,2),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    # ✅ Stay Settlement Details Table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stay_settlement_details (
+        id SERIAL PRIMARY KEY,
+        settlement_id INTEGER REFERENCES stay_settlements(id) ON DELETE CASCADE,
+        family_id INTEGER REFERENCES family_details(id) ON DELETE CASCADE,
+        family_name TEXT,
+        members_count INTEGER,
+        total_spent NUMERIC(12,2),
+        due_amount NUMERIC(12,2),
+        balance NUMERIC(12,2)
+    );
+    """)
+
+

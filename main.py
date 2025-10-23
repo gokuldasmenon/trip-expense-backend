@@ -389,8 +389,9 @@ def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
 
 @app.get("/settlement/{trip_id}")
-def get_settlement(trip_id: int):
-    return settlement.get_settlement(trip_id)
+def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
+    return settlement.get_settlement(trip_id, start_date, end_date, record)
+
 
 @app.get("/sync_settlement/{trip_id}")
 def sync_settlement(trip_id: int):
