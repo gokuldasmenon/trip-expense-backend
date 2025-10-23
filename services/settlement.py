@@ -3,7 +3,8 @@ import psycopg2.extras
 from datetime import datetime, timedelta
 
 
-def get_settlement(trip_id: int, start_date=None, end_date=None, record=False):
+def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
+
     """
     Unified settlement logic for both TRIP and STAY modes.
     - TRIP → existing logic
