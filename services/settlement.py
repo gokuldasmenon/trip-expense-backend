@@ -323,33 +323,8 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
 
 
 
-# ===============================================
-# 💾 RECORD STAY SETTLEMENT
-# ===============================================
-def record_stay_settlement(trip_id: int, result: dict):
-    conn = get_connection()
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        INSERT INTO stay_settlements (trip_id, mode, period_start, period_end, total_expense, per_head_cost)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id
-    """, (trip_id, 'STAY', result["period_start"], result["period_end"],
-          result["total_expense"], result["per_head_cost"]))
-    settlement_id = cursor.fetchone()[0]
 
-    for fam in result["families"]:
-        cursor.execute("""
-            INSERT INTO stay_settlement_details
-            (settlement_id, family_id, family_name, members_count, total_spent, due_amount, balance)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (settlement_id, fam["family_id"], fam["family_name"], fam["members_count"],
-              fam["total_spent"], fam["due_amount"], fam["balance"]))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return settlement_id
 
 
 # ===============================================
@@ -364,3 +339,98 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
         result["recorded_id"] = settlement_id
     result["carry_forward_total"] = round(sum(f["previous_balance"] for f in result["families"]), 2)
     return result
+
+def record_stay_settlement(trip_id: int, result: dict) -> int:
+    """
+    Records a stay settlement into stay_settlements and stay_settlement_details.
+    Returns the new settlement_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Insert into stay_settlements
+    cursor.execute("""
+        INSERT INTO stay_settlements (trip_id, mode, period_start, period_end, total_expense, per_head_cost)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (
+        trip_id,
+        result.get("mode", "STAY"),
+        result.get("period_start", datetime.utcnow().date()),
+        result.get("period_end", datetime.utcnow().date()),
+        result.get("total_expense", 0.0),
+        result.get("per_head_cost", 0.0)
+    ))
+    settlement_id = cursor.fetchone()["id"]
+
+    # Insert family-level details
+    for fam in result.get("families", []):
+        cursor.execute("""
+            INSERT INTO stay_settlement_details 
+                (settlement_id, family_id, family_name, members_count, total_spent, due_amount, balance)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            settlement_id,
+            fam.get("family_id"),
+            fam.get("family_name"),
+            fam.get("members_count"),
+            fam.get("total_spent"),
+            fam.get("due_amount"),
+            fam.get("balance")
+        ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    print(f"✅ Stay settlement {settlement_id} recorded for trip {trip_id}")
+    return settlement_id
+
+def record_trip_settlement(trip_id: int, result: dict) -> int:
+    """
+    Records a trip settlement into trip_settlements and trip_settlement_details.
+    Returns the new settlement_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Insert into trip_settlements
+    cursor.execute("""
+        INSERT INTO trip_settlements (
+            trip_id, mode, period_start, period_end, total_expense, per_head_cost
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (
+        trip_id,
+        result.get("mode", "TRIP"),
+        result.get("period_start", datetime.utcnow().date()),
+        result.get("period_end", datetime.utcnow().date()),
+        result.get("total_expense", 0.0),
+        result.get("per_head_cost", 0.0)
+    ))
+    settlement_id = cursor.fetchone()["id"]
+
+    # Insert family-level details
+    for fam in result.get("families", []):
+        cursor.execute("""
+            INSERT INTO trip_settlement_details (
+                settlement_id, family_id, family_name, members_count, total_spent, due_amount, balance
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            settlement_id,
+            fam.get("family_id"),
+            fam.get("family_name"),
+            fam.get("members_count"),
+            fam.get("total_spent"),
+            fam.get("raw_balance", 0.0),  # raw_balance acts as due_amount here
+            fam.get("balance", 0.0)
+        ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    print(f"✅ Trip settlement {settlement_id} recorded for trip {trip_id}")
+    return settlement_id

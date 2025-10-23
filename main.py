@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
 import time
-from services.settlement import calculate_stay_settlement, get_settlement, record_stay_settlement
+from services.settlement import calculate_stay_settlement, get_settlement, record_stay_settlement, record_trip_settlement
 # Local imports
 from database import get_connection, initialize_database
 from models import (
