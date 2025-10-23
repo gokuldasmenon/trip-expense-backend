@@ -4,8 +4,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
-from datetime import datetime, time
-from typing import Optional
+from datetime import datetime
+import time
 
 # Local imports
 from database import get_connection, initialize_database
