@@ -220,7 +220,7 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Families in this stay
+    # ✅ Fetch all families for this trip
     cursor.execute("""
         SELECT id, family_name, members_count
         FROM family_details
@@ -234,7 +234,7 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
     family_names = {f["id"]: f["family_name"] for f in families}
     family_members = {f["id"]: f["members_count"] for f in families}
 
-    # Expenses within the period
+    # ✅ Get all expenses within the requested period
     if start_date and end_date:
         cursor.execute("""
             SELECT payer_family_id, amount
@@ -263,8 +263,10 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
     per_head_cost = total_expense / total_members if total_members > 0 else 0.0
     expected_share = {fid: family_members[fid] * per_head_cost for fid in family_ids}
 
-    # Carry forward from previous settlement (if applicable)
+    # ✅ Carry-forward logic
     previous_balances = {fid: 0.0 for fid in family_ids}
+    carry_forward_breakdown = []
+
     if carry_forward:
         last_settlement = get_last_stay_settlement(trip_id)
         if last_settlement:
@@ -273,23 +275,36 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
                 FROM stay_settlement_details
                 WHERE settlement_id = %s
             """, (last_settlement["id"],))
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            for row in rows:
                 previous_balances[row["family_id"]] = float(row["balance"])
 
-    # Compute final balances
+            carry_forward_breakdown = [
+                {
+                    "family_id": row["family_id"],
+                    "family_name": family_names.get(row["family_id"], "Unknown"),
+                    "previous_balance": float(row["balance"])
+                }
+                for row in rows
+            ]
+
+    # ✅ Compute per-family balances
     family_results = []
     for fid in family_ids:
         paid = expense_balance.get(fid, 0.0)
         owed = expected_share.get(fid, 0.0)
         prev = previous_balances.get(fid, 0.0)
-        net = prev + (paid - owed)
+        current_net = paid - owed
+        final_balance = prev + current_net
         family_results.append({
             "family_id": fid,
             "family_name": family_names[fid],
             "members_count": family_members[fid],
             "total_spent": round(paid, 2),
             "due_amount": round(owed, 2),
-            "balance": round(net, 2)
+            "previous_balance": round(prev, 2),
+            "current_period_net": round(current_net, 2),
+            "balance": round(final_balance, 2)
         })
 
     cursor.close()
@@ -302,8 +317,10 @@ def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carr
         "total_members": total_members,
         "per_head_cost": round(per_head_cost, 2),
         "families": family_results,
-        "carry_forward": carry_forward
+        "carry_forward": carry_forward,
+        "carry_forward_breakdown": carry_forward_breakdown
     }
+
 
 
 # ===============================================
