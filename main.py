@@ -1,3 +1,4 @@
+import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,28 +27,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+IS_DEV = os.environ.get("ENV", "development") == "development"
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """
-    Logs each incoming HTTP request with:
-    - Path and method
-    - Response status
-    - Execution time in milliseconds
+    Logs:
+      ✅ All requests (if in development)
+      ⚠️ Only slow (>500ms) or failed ones in production
     """
     start_time = time.time()
 
     try:
         response = await call_next(request)
     except Exception as e:
-        # Log unhandled errors
         process_time = (time.time() - start_time) * 1000
         print(f"❌ ERROR {request.method} {request.url.path} ({process_time:.2f} ms): {e}")
         raise
 
     process_time = (time.time() - start_time) * 1000
     status = response.status_code
-    print(f"✅ {request.method} {request.url.path} → {status} ({process_time:.2f} ms)")
+
+    # Always log if development or if slow/error
+    if IS_DEV or process_time > 500 or status >= 400:
+        query = f"?{request.url.query}" if request.url.query else ""
+        print(
+            f"{'⚠️' if process_time > 500 else '✅'} "
+            f"{request.method} {request.url.path}{query} "
+            f"→ {status} ({process_time:.2f} ms)"
+        )
 
     return response
 # ================================================
@@ -474,11 +481,13 @@ def list_stay_settlements(trip_id: int):
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     cursor.execute("""
-        SELECT id, trip_id, start_date, end_date, total_expense, per_head_cost, created_at
+        SELECT id, trip_id, period_start AS start_date, period_end AS end_date,
+            total_expense, per_head_cost, created_at
         FROM stay_settlements
         WHERE trip_id = %s
         ORDER BY id DESC
     """, (trip_id,))
+
     records = cursor.fetchall()
 
     cursor.close()
@@ -501,12 +510,14 @@ def get_stay_settlement_detail(settlement_id: int):
 
     # ✅ Settlement header
     cursor.execute("""
-        SELECT s.id, s.trip_id, t.name AS trip_name, s.start_date, s.end_date,
-               s.total_expense, s.per_head_cost, s.created_at
+        SELECT s.id, s.trip_id, t.name AS trip_name,
+            s.period_start AS start_date, s.period_end AS end_date,
+            s.total_expense, s.per_head_cost, s.created_at
         FROM stay_settlements s
         JOIN trips t ON s.trip_id = t.id
         WHERE s.id = %s
     """, (settlement_id,))
+
     settlement = cursor.fetchone()
 
     if not settlement:
