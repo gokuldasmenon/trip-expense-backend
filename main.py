@@ -1,8 +1,9 @@
+import traceback
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
-from datetime import datetime
+from datetime import datetime, time
 from typing import Optional
 
 # Local imports
@@ -26,6 +27,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """
+    Logs each incoming HTTP request with:
+    - Path and method
+    - Response status
+    - Execution time in milliseconds
+    """
+    start_time = time.time()
+
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        # Log unhandled errors
+        process_time = (time.time() - start_time) * 1000
+        print(f"❌ ERROR {request.method} {request.url.path} ({process_time:.2f} ms): {e}")
+        raise
+
+    process_time = (time.time() - start_time) * 1000
+    status = response.status_code
+    print(f"✅ {request.method} {request.url.path} → {status} ({process_time:.2f} ms)")
+
+    return response
 # ================================================
 # 🏁 STARTUP + HEALTH CHECK
 # ================================================
@@ -398,6 +422,7 @@ def sync_settlement(trip_id: int):
     """
     Returns settlement in format expected by Flutter.
     Includes timestamp and wraps settlement data inside "data".
+    Logs detailed traceback for Render debugging.
     """
     try:
         result = settlement.get_settlement(trip_id)
@@ -406,7 +431,15 @@ def sync_settlement(trip_id: int):
             "last_sync": datetime.utcnow().isoformat()
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Settlement sync failed: {e}")
+        # Print full traceback to Render logs
+        print("❌ ERROR in /sync_settlement endpoint:")
+        traceback.print_exc()
+
+        # Return sanitized error message to client
+        raise HTTPException(
+            status_code=500,
+            detail=f"Settlement sync failed: {type(e).__name__}: {e}"
+        )
 
 
 @app.get("/trip_summary/{trip_id}")
