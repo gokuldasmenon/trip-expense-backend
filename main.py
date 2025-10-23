@@ -67,7 +67,7 @@ def on_startup():
 
 @app.get("/")
 def home():
-    return {"message": "✅ Expense Tracker Backend Running"}
+    return {"message": "✅ Expense Tracker Backend Running Now"}
 
 
 # ================================================
