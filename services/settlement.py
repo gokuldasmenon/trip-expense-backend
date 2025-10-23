@@ -181,7 +181,8 @@ def calculate_stay_settlement(trip_id: int):
         raise ValueError(f"No families found for trip_id={trip_id}")
 
     # --- Expenses in this trip
-    cursor.execute("SELECT amount, payer_id AS family_id FROM expenses WHERE trip_id = %s", (trip_id,))
+    cursor.execute("SELECT amount, payer_family_id AS family_id FROM expenses WHERE trip_id = %s", (trip_id,))
+
     expenses = cursor.fetchall()
 
     total_expense = sum(float(e["amount"]) for e in expenses)

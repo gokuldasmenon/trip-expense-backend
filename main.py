@@ -558,11 +558,18 @@ def record_stay_settlement_endpoint(trip_id: int):
     """
     
     try:
+        print(f"🟢 Starting stay settlement recording for trip_id={trip_id}")
         result = calculate_stay_settlement(trip_id)
+        print(f"✅ Calculation complete: total_expense={result['total_expense']}, per_head_cost={result['per_head_cost']}")
         settlement_id = record_stay_settlement(trip_id, result)
+        print(f"💾 Recorded stay settlement with ID {settlement_id}")
         return {
             "message": f"Stay settlement recorded successfully for trip {trip_id}",
             "settlement_id": settlement_id
         }
     except Exception as e:
+        import traceback
+        print("❌ Error while recording stay settlement:", e)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
+
