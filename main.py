@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
 import time
-
+from services.settlement import calculate_stay_settlement, record_stay_settlement
 # Local imports
 from database import get_connection, initialize_database
 from models import (
@@ -547,3 +547,22 @@ def get_stay_settlement_detail(settlement_id: int):
 
     settlement["details"] = details
     return settlement
+# ==========================================
+# 🏠 RECORD A STAY SETTLEMENT
+# ==========================================
+@app.post("/record_stay_settlement/{trip_id}")
+def record_stay_settlement_endpoint(trip_id: int):
+    """
+    Computes and records a stay settlement for the given trip.
+    Creates entries in stay_settlements and stay_settlement_details.
+    """
+    
+    try:
+        result = calculate_stay_settlement(trip_id)
+        settlement_id = record_stay_settlement(trip_id, result)
+        return {
+            "message": f"Stay settlement recorded successfully for trip {trip_id}",
+            "settlement_id": settlement_id
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")

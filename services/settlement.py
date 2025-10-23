@@ -168,3 +168,71 @@ def get_trip_summary(trip_id: int):
         "expenses": expenses,
         "settlement": settlement_data
     }
+def calculate_stay_settlement(trip_id: int):
+    """Compute total expense, per-head cost and family balances for a Stay trip."""
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # --- Families in this trip
+    cursor.execute("SELECT id, family_name, members_count FROM family_details WHERE trip_id = %s", (trip_id,))
+    families = cursor.fetchall()
+    if not families:
+        conn.close()
+        raise ValueError(f"No families found for trip_id={trip_id}")
+
+    # --- Expenses in this trip
+    cursor.execute("SELECT amount, payer_id AS family_id FROM expenses WHERE trip_id = %s", (trip_id,))
+    expenses = cursor.fetchall()
+
+    total_expense = sum(float(e["amount"]) for e in expenses)
+    total_members = sum(f["members_count"] for f in families)
+    per_head_cost = total_expense / total_members if total_members > 0 else 0
+
+    # --- Compute per-family stats
+    for f in families:
+        spent = sum(float(e["amount"]) for e in expenses if e["family_id"] == f["id"])
+        due = f["members_count"] * per_head_cost
+        f["spent"] = spent
+        f["due"] = due
+        f["balance"] = spent - due
+
+    conn.close()
+
+    return {
+        "trip_id": trip_id,
+        "total_expense": total_expense,
+        "per_head_cost": per_head_cost,
+        "families": families
+    }
+
+
+def record_stay_settlement(trip_id: int, result: dict):
+    """Insert the computed Stay settlement into stay_settlements and stay_settlement_details."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # --- Insert header
+    cursor.execute("""
+        INSERT INTO stay_settlements (trip_id, mode, period_start, period_end, total_expense, per_head_cost)
+        VALUES (%s, 'STAY', CURRENT_DATE, CURRENT_DATE, %s, %s)
+        RETURNING id
+    """, (trip_id, result["total_expense"], result["per_head_cost"]))
+    settlement_id = cursor.fetchone()[0]
+
+    # --- Insert details
+    for f in result["families"]:
+        cursor.execute("""
+            INSERT INTO stay_settlement_details (
+                settlement_id, family_id, family_name, members_count,
+                total_spent, due_amount, balance
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            settlement_id, f["id"], f["family_name"], f["members_count"],
+            f["spent"], f["due"], f["balance"]
+        ))
+
+    conn.commit()
+    conn.close()
+
+    return settlement_id
