@@ -472,59 +472,56 @@ def get_archived_trips_endpoint():
 # 🏠 STAY SETTLEMENT RECORDS
 # ============================
 
-# @app.get("/stay_settlements/{trip_id}")
-# def list_stay_settlements(trip_id: int):
-#     """
-#     List all recorded settlements for a given Stay trip.
-#     """
-#     conn = get_connection()
-#     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+# ==========================================
+# 🧾 LIST ALL STAY SETTLEMENTS
+# ==========================================
+@app.get("/stay_settlements/{trip_id}")
+def list_stay_settlements(trip_id: int):
+    """
+    List all recorded settlements for a given Stay trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-#     cursor.execute("""
-#         SELECT id, trip_id, period_start AS start_date, period_end AS end_date,
-#             total_expense, per_head_cost, created_at
-#         FROM stay_settlements
-#         WHERE trip_id = %s
-#         ORDER BY id DESC
-#     """, (trip_id,))
+    cursor.execute("""
+        SELECT id, trip_id, period_start AS start_date, period_end AS end_date,
+               total_expense, per_head_cost, created_at
+        FROM stay_settlements
+        WHERE trip_id = %s
+        ORDER BY id DESC
+    """, (trip_id,))
+
+    records = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    if not records:
+        return {"message": f"No stay settlements found for trip_id {trip_id}"}
+
+    return {"trip_id": trip_id, "settlement_records": records}
 
 
-#     records = cursor.fetchall()
-
-#     cursor.close()
-#     conn.close()
-
-#     if not records:
-#         return {"message": f"No stay settlements found for trip_id {trip_id}"}
-
-#     return {"trip_id": trip_id, "settlement_records": records}
-
-
+# ==========================================
+# 🧾 GET SINGLE STAY SETTLEMENT DETAILS
+# ==========================================
 @app.get("/stay_settlement/{settlement_id}")
 def get_stay_settlement_detail(settlement_id: int):
     """
     Retrieve details for a specific recorded stay settlement.
-    Includes each family's contribution and balance.
+    Includes settlement header and each family's contribution/balance.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     # ✅ Settlement header
     cursor.execute("""
-        SELECT 
-            d.family_id, 
-            f.family_name, 
-            d.total_spent,     -- 🔄 FIXED: was amount_spent
-            d.due_amount,      -- ✅ include this for completeness
-            d.balance
-        FROM stay_settlement_details d
-        JOIN family_details f ON d.family_id = f.id
-        WHERE d.settlement_id = %s
-        ORDER BY f.family_name ASC
+        SELECT s.id, s.trip_id, t.name AS trip_name, s.period_start, s.period_end,
+               s.total_expense, s.per_head_cost, s.created_at
+        FROM stay_settlements s
+        JOIN trips t ON s.trip_id = t.id
+        WHERE s.id = %s
     """, (settlement_id,))
-    details = cursor.fetchall()
-
-
     settlement = cursor.fetchone()
 
     if not settlement:
@@ -532,9 +529,15 @@ def get_stay_settlement_detail(settlement_id: int):
         conn.close()
         return {"error": f"Settlement record {settlement_id} not found"}
 
-    # ✅ Settlement details (family-wise)
+    # ✅ Family details
     cursor.execute("""
-        SELECT d.family_id, f.family_name, d.amount_spent, d.balance
+        SELECT 
+            d.family_id,
+            f.family_name,
+            d.members_count,
+            d.total_spent,
+            d.due_amount,
+            d.balance
         FROM stay_settlement_details d
         JOIN family_details f ON d.family_id = f.id
         WHERE d.settlement_id = %s
@@ -547,6 +550,8 @@ def get_stay_settlement_detail(settlement_id: int):
 
     settlement["details"] = details
     return settlement
+
+
 # ==========================================
 # 🏠 RECORD A STAY SETTLEMENT
 # ==========================================
@@ -556,7 +561,6 @@ def record_stay_settlement_endpoint(trip_id: int):
     Computes and records a stay settlement for the given trip.
     Creates entries in stay_settlements and stay_settlement_details.
     """
-    
     try:
         print(f"🟢 Starting stay settlement recording for trip_id={trip_id}")
         result = calculate_stay_settlement(trip_id)
@@ -572,4 +576,5 @@ def record_stay_settlement_endpoint(trip_id: int):
         print("❌ Error while recording stay settlement:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
+
 
