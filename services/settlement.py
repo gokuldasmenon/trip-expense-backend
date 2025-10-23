@@ -168,72 +168,182 @@ def get_trip_summary(trip_id: int):
         "expenses": expenses,
         "settlement": settlement_data
     }
-def calculate_stay_settlement(trip_id: int):
-    """Compute total expense, per-head cost and family balances for a Stay trip."""
+from datetime import date, timedelta, datetime
+from database import get_connection
+import psycopg2.extras
+
+
+# ===============================================
+# 🕒 PERIOD DETERMINATION
+# ===============================================
+def determine_period(period_type: str):
+    """Returns (start_date, end_date) for given period type."""
+    today = date.today()
+
+    if period_type == "weekly":
+        start = today - timedelta(days=today.weekday())  # Monday
+        end = start + timedelta(days=6)
+    elif period_type == "monthly":
+        start = today.replace(day=1)
+        next_month = start.replace(day=28) + timedelta(days=4)
+        end = next_month - timedelta(days=next_month.day)
+    else:
+        # on_demand: same-day period
+        start = end = today
+
+    return (start, end)
+
+
+# ===============================================
+# 🔁 FETCH LAST STAY SETTLEMENT
+# ===============================================
+def get_last_stay_settlement(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT id, period_start, period_end, created_at
+        FROM stay_settlements
+        WHERE trip_id = %s
+        ORDER BY id DESC
+        LIMIT 1
+    """, (trip_id,))
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result
+
+
+# ===============================================
+# 💰 CALCULATE STAY SETTLEMENT
+# ===============================================
+def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carry_forward=True):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # --- Families in this trip
-    cursor.execute("SELECT id, family_name, members_count FROM family_details WHERE trip_id = %s", (trip_id,))
+    # Families in this stay
+    cursor.execute("""
+        SELECT id, family_name, members_count
+        FROM family_details
+        WHERE trip_id = %s
+    """, (trip_id,))
     families = cursor.fetchall()
     if not families:
-        conn.close()
-        raise ValueError(f"No families found for trip_id={trip_id}")
+        raise Exception("No families found for this stay trip.")
 
-    # --- Expenses in this trip
-    cursor.execute("SELECT amount, payer_family_id AS family_id FROM expenses WHERE trip_id = %s", (trip_id,))
+    family_ids = [f["id"] for f in families]
+    family_names = {f["id"]: f["family_name"] for f in families}
+    family_members = {f["id"]: f["members_count"] for f in families}
 
+    # Expenses within the period
+    if start_date and end_date:
+        cursor.execute("""
+            SELECT payer_family_id, amount
+            FROM expenses
+            WHERE trip_id = %s AND date BETWEEN %s AND %s
+        """, (trip_id, start_date, end_date))
+    else:
+        cursor.execute("""
+            SELECT payer_family_id, amount
+            FROM expenses
+            WHERE trip_id = %s
+        """, (trip_id,))
     expenses = cursor.fetchall()
 
-    total_expense = sum(float(e["amount"]) for e in expenses)
-    total_members = sum(f["members_count"] for f in families)
-    per_head_cost = total_expense / total_members if total_members > 0 else 0
+    total_expense = 0.0
+    expense_balance = {fid: 0.0 for fid in family_ids}
 
-    # --- Compute per-family stats
-    for f in families:
-        spent = sum(float(e["amount"]) for e in expenses if e["family_id"] == f["id"])
-        due = f["members_count"] * per_head_cost
-        f["spent"] = spent
-        f["due"] = due
-        f["balance"] = spent - due
+    for e in expenses:
+        fid = e["payer_family_id"]
+        amt = float(e["amount"])
+        if fid in expense_balance:
+            expense_balance[fid] += amt
+            total_expense += amt
 
+    total_members = sum(family_members.values())
+    per_head_cost = total_expense / total_members if total_members > 0 else 0.0
+    expected_share = {fid: family_members[fid] * per_head_cost for fid in family_ids}
+
+    # Carry forward from previous settlement (if applicable)
+    previous_balances = {fid: 0.0 for fid in family_ids}
+    if carry_forward:
+        last_settlement = get_last_stay_settlement(trip_id)
+        if last_settlement:
+            cursor.execute("""
+                SELECT family_id, balance
+                FROM stay_settlement_details
+                WHERE settlement_id = %s
+            """, (last_settlement["id"],))
+            for row in cursor.fetchall():
+                previous_balances[row["family_id"]] = float(row["balance"])
+
+    # Compute final balances
+    family_results = []
+    for fid in family_ids:
+        paid = expense_balance.get(fid, 0.0)
+        owed = expected_share.get(fid, 0.0)
+        prev = previous_balances.get(fid, 0.0)
+        net = prev + (paid - owed)
+        family_results.append({
+            "family_id": fid,
+            "family_name": family_names[fid],
+            "members_count": family_members[fid],
+            "total_spent": round(paid, 2),
+            "due_amount": round(owed, 2),
+            "balance": round(net, 2)
+        })
+
+    cursor.close()
     conn.close()
 
     return {
-        "trip_id": trip_id,
-        "total_expense": total_expense,
-        "per_head_cost": per_head_cost,
-        "families": families
+        "period_start": start_date,
+        "period_end": end_date,
+        "total_expense": round(total_expense, 2),
+        "total_members": total_members,
+        "per_head_cost": round(per_head_cost, 2),
+        "families": family_results,
+        "carry_forward": carry_forward
     }
 
 
+# ===============================================
+# 💾 RECORD STAY SETTLEMENT
+# ===============================================
 def record_stay_settlement(trip_id: int, result: dict):
-    """Insert the computed Stay settlement into stay_settlements and stay_settlement_details."""
     conn = get_connection()
     cursor = conn.cursor()
 
-    # --- Insert header
     cursor.execute("""
         INSERT INTO stay_settlements (trip_id, mode, period_start, period_end, total_expense, per_head_cost)
-        VALUES (%s, 'STAY', CURRENT_DATE, CURRENT_DATE, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
-    """, (trip_id, result["total_expense"], result["per_head_cost"]))
+    """, (trip_id, 'STAY', result["period_start"], result["period_end"],
+          result["total_expense"], result["per_head_cost"]))
     settlement_id = cursor.fetchone()[0]
 
-    # --- Insert details
-    for f in result["families"]:
+    for fam in result["families"]:
         cursor.execute("""
-            INSERT INTO stay_settlement_details (
-                settlement_id, family_id, family_name, members_count,
-                total_spent, due_amount, balance
-            )
+            INSERT INTO stay_settlement_details
+            (settlement_id, family_id, family_name, members_count, total_spent, due_amount, balance)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (
-            settlement_id, f["id"], f["family_name"], f["members_count"],
-            f["spent"], f["due"], f["balance"]
-        ))
+        """, (settlement_id, fam["family_id"], fam["family_name"], fam["members_count"],
+              fam["total_spent"], fam["due_amount"], fam["balance"]))
 
     conn.commit()
+    cursor.close()
     conn.close()
-
     return settlement_id
+
+
+# ===============================================
+# 🧮 ORCHESTRATOR (USED BY /settlement/{trip_id})
+# ===============================================
+def get_stay_settlement(trip_id: int, period="on_demand", record=False):
+    start_date, end_date = determine_period(period)
+    result = calculate_stay_settlement(trip_id, start_date, end_date, carry_forward=True)
+
+    if record:
+        settlement_id = record_stay_settlement(trip_id, result)
+        result["recorded_id"] = settlement_id
+
+    return result

@@ -577,4 +577,30 @@ def record_stay_settlement_endpoint(trip_id: int):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
 
+@app.get("/settlement/{trip_id}")
+def unified_settlement(trip_id: int, mode: str = "TRIP", period: str = "on_demand", record: bool = False):
+    """
+    Unified endpoint for TRIP and STAY settlements.
+    mode: TRIP | STAY
+    period: on_demand | weekly | monthly
+    record: True | False (for STAY mode only)
+    """
+    try:
+        if mode.upper() == "TRIP":
+            result = settlement.get_settlement(trip_id)
+            result["mode"] = "TRIP"
+        elif mode.upper() == "STAY":
+            result = settlement.get_stay_settlement(trip_id, period, record)
+            result["mode"] = "STAY"
+        else:
+            raise HTTPException(status_code=400, detail="Invalid mode")
+
+        result["timestamp"] = datetime.utcnow().isoformat()
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to compute settlement: {e}")
+
 
