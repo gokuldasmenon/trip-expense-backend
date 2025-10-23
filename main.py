@@ -511,13 +511,18 @@ def get_stay_settlement_detail(settlement_id: int):
 
     # ✅ Settlement header
     cursor.execute("""
-        SELECT s.id, s.trip_id, t.name AS trip_name,
-            s.period_start AS start_date, s.period_end AS end_date,
-            s.total_expense, s.per_head_cost, s.created_at
-        FROM stay_settlements s
-        JOIN trips t ON s.trip_id = t.id
-        WHERE s.id = %s
+        SELECT 
+            d.family_id, 
+            f.family_name, 
+            d.total_spent,     -- 🔄 FIXED: was amount_spent
+            d.due_amount,      -- ✅ include this for completeness
+            d.balance
+        FROM stay_settlement_details d
+        JOIN family_details f ON d.family_id = f.id
+        WHERE d.settlement_id = %s
+        ORDER BY f.family_name ASC
     """, (settlement_id,))
+    details = cursor.fetchall()
 
 
     settlement = cursor.fetchone()
