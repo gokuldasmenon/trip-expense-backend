@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
 import time
-from services.settlement import calculate_stay_settlement, record_stay_settlement
+from services.settlement import calculate_stay_settlement, get_settlement, record_stay_settlement
 # Local imports
 from database import get_connection, initialize_database
 from models import (
@@ -419,9 +419,9 @@ def add_advance(advance: AdvanceModel):
 def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
 
-@app.get("/settlement/{trip_id}")
-def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
-    return settlement.get_settlement(trip_id, start_date, end_date, record)
+# @app.get("/settlement/{trip_id}")
+# def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
+#     return settlement.get_settlement(trip_id, start_date, end_date, record)
 
 
 @app.get("/sync_settlement/{trip_id}")
@@ -577,30 +577,84 @@ def record_stay_settlement_endpoint(trip_id: int):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
 
-@app.get("/settlement/{trip_id}")
-def unified_settlement(trip_id: int, mode: str = "TRIP", period: str = "on_demand", record: bool = False):
-    """
-    Unified endpoint for TRIP and STAY settlements.
-    mode: TRIP | STAY
-    period: on_demand | weekly | monthly
-    record: True | False (for STAY mode only)
-    """
-    try:
-        if mode.upper() == "TRIP":
-            result = settlement.get_settlement(trip_id)
-            result["mode"] = "TRIP"
-        elif mode.upper() == "STAY":
-            result = settlement.get_stay_settlement(trip_id, period, record)
-            result["mode"] = "STAY"
-        else:
-            raise HTTPException(status_code=400, detail="Invalid mode")
+from datetime import datetime
+from fastapi import HTTPException
 
-        result["timestamp"] = datetime.utcnow().isoformat()
-        return result
+@app.get("/settlement/{trip_id}")
+def unified_settlement_endpoint(
+    trip_id: int,
+    mode: str = "TRIP",
+    period: str = None,
+    record: bool = False
+):
+    """
+    Unified settlement endpoint for both TRIP and STAY modes.
+    - mode = TRIP or STAY
+    - period = optional (e.g., 'monthly' or custom date range)
+    - record = if True, records the settlement permanently
+    """
+
+    try:
+        print(f"🧮 Starting unified settlement computation for trip_id={trip_id}, mode={mode}")
+
+        if mode.upper() == "STAY":
+            # =============================
+            # 🏠 STAY MODE CALCULATION
+            # =============================
+            result = calculate_stay_settlement(trip_id)
+
+            result["mode"] = "STAY"
+            result["timestamp"] = datetime.utcnow().isoformat()
+
+            # Add carry-forward summary for reporting
+            if "families" in result:
+                result["carry_forward_total"] = round(
+                    sum(f.get("previous_balance", 0.0) for f in result["families"]), 2
+                )
+
+            # Compact summary for dashboard view
+            result["summary"] = {
+                "total_expense": result.get("total_expense", 0.0),
+                "total_members": result.get("total_members", 0),
+                "per_head_cost": result.get("per_head_cost", 0.0),
+                "families_count": len(result.get("families", []))
+            }
+
+            # 📝 Optionally record it
+            if record:
+                settlement_id = record_stay_settlement(trip_id, result)
+                result["recorded_settlement_id"] = settlement_id
+                result["message"] = f"Stay settlement recorded successfully (ID {settlement_id})"
+
+            return result
+
+        else:
+            # =============================
+            # 🧳 TRIP MODE CALCULATION
+            # =============================
+            result = get_settlement(trip_id)
+
+            result["mode"] = "TRIP"
+            result["timestamp"] = datetime.utcnow().isoformat()
+
+            result["summary"] = {
+                "total_expense": result.get("total_expense", 0.0),
+                "total_members": result.get("total_members", 0),
+                "per_head_cost": result.get("per_head_cost", 0.0),
+                "families_count": len(result.get("families", []))
+            }
+
+            if record:
+                record_trip_settlement(trip_id, result)
+                result["message"] = "Trip settlement recorded successfully"
+
+            return result
 
     except Exception as e:
         import traceback
+        print("❌ Unified settlement failed:", e)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to compute settlement: {e}")
+        raise HTTPException(status_code=500, detail=f"Settlement generation failed: {e}")
+
 
 

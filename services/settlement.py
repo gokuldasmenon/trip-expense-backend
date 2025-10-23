@@ -362,5 +362,5 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
     if record:
         settlement_id = record_stay_settlement(trip_id, result)
         result["recorded_id"] = settlement_id
-
+    result["carry_forward_total"] = round(sum(f["previous_balance"] for f in result["families"]), 2)
     return result
