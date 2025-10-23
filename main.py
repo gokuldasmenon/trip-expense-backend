@@ -472,32 +472,32 @@ def get_archived_trips_endpoint():
 # 🏠 STAY SETTLEMENT RECORDS
 # ============================
 
-@app.get("/stay_settlements/{trip_id}")
-def list_stay_settlements(trip_id: int):
-    """
-    List all recorded settlements for a given Stay trip.
-    """
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+# @app.get("/stay_settlements/{trip_id}")
+# def list_stay_settlements(trip_id: int):
+#     """
+#     List all recorded settlements for a given Stay trip.
+#     """
+#     conn = get_connection()
+#     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    cursor.execute("""
-        SELECT id, trip_id, period_start AS start_date, period_end AS end_date,
-            total_expense, per_head_cost, created_at
-        FROM stay_settlements
-        WHERE trip_id = %s
-        ORDER BY id DESC
-    """, (trip_id,))
+#     cursor.execute("""
+#         SELECT id, trip_id, period_start AS start_date, period_end AS end_date,
+#             total_expense, per_head_cost, created_at
+#         FROM stay_settlements
+#         WHERE trip_id = %s
+#         ORDER BY id DESC
+#     """, (trip_id,))
 
 
-    records = cursor.fetchall()
+#     records = cursor.fetchall()
 
-    cursor.close()
-    conn.close()
+#     cursor.close()
+#     conn.close()
 
-    if not records:
-        return {"message": f"No stay settlements found for trip_id {trip_id}"}
+#     if not records:
+#         return {"message": f"No stay settlements found for trip_id {trip_id}"}
 
-    return {"trip_id": trip_id, "settlement_records": records}
+#     return {"trip_id": trip_id, "settlement_records": records}
 
 
 @app.get("/stay_settlement/{settlement_id}")
