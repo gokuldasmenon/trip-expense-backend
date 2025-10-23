@@ -488,6 +488,7 @@ def list_stay_settlements(trip_id: int):
         ORDER BY id DESC
     """, (trip_id,))
 
+
     records = cursor.fetchall()
 
     cursor.close()
@@ -517,6 +518,7 @@ def get_stay_settlement_detail(settlement_id: int):
         JOIN trips t ON s.trip_id = t.id
         WHERE s.id = %s
     """, (settlement_id,))
+
 
     settlement = cursor.fetchone()
 
