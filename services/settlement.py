@@ -270,7 +270,7 @@ def calculate_stay_settlement(trip_id: int):
         cursor.execute("""
             SELECT COALESCE(SUM(amount), 0) AS spent
             FROM expenses
-            WHERE trip_id = %s AND payer_id = %s;
+            WHERE trip_id = %s AND family_id = %s;
         """, (trip_id, family_id))
         total_spent = float(cursor.fetchone()["spent"])
 
