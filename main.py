@@ -589,51 +589,51 @@ from fastapi import Query
 def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
     """
     Retrieves carry-forward log(s) for a Stay trip.
-    If family_id is provided, returns logs only for that family.
+    Optionally filters by family_id.
+    Includes trip name, stay period, and settlement dates.
     """
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        if family_id:
-            print(f"📘 Fetching carry-forward logs for trip {trip_id}, family {family_id}")
-            cursor.execute("""
-                SELECT 
-                    l.id,
-                    l.trip_id,
-                    l.previous_settlement_id,
-                    l.new_settlement_id,
-                    l.family_id,
-                    f.family_name,
-                    l.previous_balance,
-                    l.new_balance,
-                    l.delta,
-                    l.created_at
-                FROM stay_carry_forward_log l
-                JOIN family_details f ON l.family_id = f.id
-                WHERE l.trip_id = %s AND l.family_id = %s
-                ORDER BY l.created_at DESC;
-            """, (trip_id, family_id))
-        else:
-            print(f"📘 Fetching all carry-forward logs for trip {trip_id}")
-            cursor.execute("""
-                SELECT 
-                    l.id,
-                    l.trip_id,
-                    l.previous_settlement_id,
-                    l.new_settlement_id,
-                    l.family_id,
-                    f.family_name,
-                    l.previous_balance,
-                    l.new_balance,
-                    l.delta,
-                    l.created_at
-                FROM stay_carry_forward_log l
-                JOIN family_details f ON l.family_id = f.id
-                WHERE l.trip_id = %s
-                ORDER BY l.created_at DESC;
-            """, (trip_id,))
+        base_query = """
+            SELECT 
+                l.id,
+                l.trip_id,
+                t.name AS trip_name,
+                ps.id AS previous_settlement_id,
+                ps.period_start AS previous_period_start,
+                ps.period_end AS previous_period_end,
+                ps.created_at AS previous_settlement_date,
+                ns.id AS new_settlement_id,
+                ns.period_start AS new_period_start,
+                ns.period_end AS new_period_end,
+                ns.created_at AS new_settlement_date,
+                l.family_id,
+                f.family_name,
+                l.previous_balance,
+                l.new_balance,
+                l.delta,
+                l.created_at AS log_created_at
+            FROM stay_carry_forward_log l
+            JOIN family_details f ON l.family_id = f.id
+            JOIN trips t ON l.trip_id = t.id
+            LEFT JOIN stay_settlements ps ON l.previous_settlement_id = ps.id
+            LEFT JOIN stay_settlements ns ON l.new_settlement_id = ns.id
+            WHERE l.trip_id = %s
+        """
 
+        params = [trip_id]
+
+        if family_id:
+            base_query += " AND l.family_id = %s"
+            params.append(family_id)
+
+        base_query += " ORDER BY l.created_at DESC;"
+
+        print(f"📘 Fetching carry-forward logs for trip={trip_id}, family={family_id or 'ALL'}")
+
+        cursor.execute(base_query, params)
         records = cursor.fetchall()
         conn.close()
 
@@ -643,10 +643,18 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
                 msg += f" and family {family_id}"
             return {"trip_id": trip_id, "family_id": family_id, "message": msg}
 
-        return {
+        # ✅ Summary metadata
+        trip_name = records[0]["trip_name"] if records else None
+        summary = {
             "trip_id": trip_id,
-            "family_id": family_id,
+            "trip_name": trip_name,
+            "family_filter": family_id,
             "total_records": len(records),
+            "latest_settlement_date": records[0]["new_settlement_date"] if records else None
+        }
+
+        return {
+            "summary": summary,
             "carry_forward_history": records
         }
 
@@ -655,6 +663,7 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
         print("❌ Error retrieving carry-forward log:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch carry-forward log: {e}")
+
 
 
 
