@@ -577,8 +577,55 @@ def record_stay_settlement_endpoint(trip_id: int):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
 
-from datetime import datetime
-from fastapi import HTTPException
+# ==========================================
+# 📜 VIEW CARRY-FORWARD HISTORY FOR A TRIP
+# ==========================================
+@app.get("/stay_carry_forward_log/{trip_id}")
+def get_carry_forward_log(trip_id: int):
+    """
+    Retrieves all carry-forward records for a given Stay trip.
+    Includes previous & new settlement IDs, family details, and balance deltas.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        cursor.execute("""
+            SELECT 
+                l.id,
+                l.trip_id,
+                l.previous_settlement_id,
+                l.new_settlement_id,
+                l.family_id,
+                f.family_name,
+                l.previous_balance,
+                l.new_balance,
+                l.delta,
+                l.created_at
+            FROM stay_carry_forward_log l
+            JOIN family_details f ON l.family_id = f.id
+            WHERE l.trip_id = %s
+            ORDER BY l.created_at DESC;
+        """, (trip_id,))
+        
+        records = cursor.fetchall()
+        conn.close()
+
+        if not records:
+            return {"trip_id": trip_id, "message": "No carry-forward history found for this trip."}
+
+        return {
+            "trip_id": trip_id,
+            "carry_forward_history": records,
+            "total_records": len(records)
+        }
+
+    except Exception as e:
+        import traceback
+        print("❌ Error retrieving carry-forward log:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch carry-forward log: {e}")
+
 
 @app.get("/settlement/{trip_id}")
 def unified_settlement_endpoint(
