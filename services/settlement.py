@@ -335,30 +335,40 @@ def calculate_stay_settlement(trip_id: int):
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
     """
     Logs carry-forward balances for each family from the previous to the new stay settlement.
+    Failures here are logged but do not block the main settlement.
     """
     if not previous_settlement_id:
-        return  # nothing to carry forward
+        print("ℹ️ No previous settlement found — skipping carry-forward log.")
+        return
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    print(f"🧾 Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
+        print(f"🧾 Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
 
-    for fam in families:
-        family_id = fam["family_id"]
-        prev_balance = float(fam.get("previous_balance", 0.0))
-        new_balance = float(fam.get("balance", 0.0))
-        delta = round(new_balance - prev_balance, 2)
+        for fam in families:
+            family_id = fam["family_id"]
+            prev_balance = float(fam.get("previous_balance", 0.0))
+            new_balance = float(fam.get("balance", 0.0))
+            delta = round(new_balance - prev_balance, 2)
 
-        cursor.execute("""
-            INSERT INTO stay_carry_forward_log (
-                trip_id, previous_settlement_id, new_settlement_id,
-                family_id, previous_balance, new_balance, delta
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-        """, (trip_id, previous_settlement_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
+            cursor.execute("""
+                INSERT INTO stay_carry_forward_log (
+                    trip_id, previous_settlement_id, new_settlement_id,
+                    family_id, previous_balance, new_balance, delta
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+            """, (trip_id, previous_settlement_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+        print("✅ Carry-forward log recorded successfully.")
+
+    except Exception as e:
+        import traceback
+        print(f"⚠️ Warning: carry-forward log failed — continuing anyway. Error: {e}")
+        traceback.print_exc()
+
 
 
 
