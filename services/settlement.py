@@ -225,7 +225,7 @@ import psycopg2.extras
 def calculate_stay_settlement(trip_id: int):
     """
     Calculates stay settlement for a trip with carry-forward support
-    and automatic period_start / period_end determination.
+    and corrects duplication of balances when recording multiple times.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -246,7 +246,7 @@ def calculate_stay_settlement(trip_id: int):
     total_members = int(cursor.fetchone()["total_members"] or 1)
     per_head_cost = round(total_expense / total_members, 2)
 
-    # 2️⃣ Find previous settlement (for carry-forward + period_start)
+    # 2️⃣ Find previous settlement
     cursor.execute("""
         SELECT id, period_end
         FROM stay_settlements
@@ -287,7 +287,7 @@ def calculate_stay_settlement(trip_id: int):
         family_id = f["family_id"]
         members_count = f["members_count"]
 
-        # ✅ Fix: correct column for expenses
+        # ✅ Correct expense calculation
         cursor.execute("""
             SELECT COALESCE(SUM(amount), 0) AS spent
             FROM expenses
@@ -298,7 +298,10 @@ def calculate_stay_settlement(trip_id: int):
         due_amount = round(per_head_cost * members_count, 2)
         current_period_net = round(total_spent - due_amount, 2)
         prev_balance = previous_balance_map.get(family_id, 0.0)
-        new_balance = round(prev_balance + current_period_net, 2)
+
+        # ✅ FIXED: Do not cumulatively add balances
+        # Carry forward exists only for reference; balance reflects actual net position.
+        new_balance = round(current_period_net, 2)
 
         results.append({
             "family_id": family_id,
@@ -311,7 +314,32 @@ def calculate_stay_settlement(trip_id: int):
             "balance": new_balance
         })
 
-    # 5️⃣ Determine period start / end automatically
+    # 5️⃣ Compute per-family settlement transactions (who pays whom)
+    debtors = [f for f in results if f["balance"] < 0]
+    creditors = [f for f in results if f["balance"] > 0]
+    transactions = []
+
+    for d in debtors:
+        owed = abs(d["balance"])
+        for c in creditors:
+            if owed <= 0:
+                break
+            if c["balance"] <= 0:
+                continue
+            payment = min(owed, c["balance"])
+            transactions.append({
+                "from": d["family_name"],
+                "to": c["family_name"],
+                "amount": round(payment, 2)
+            })
+            owed -= payment
+            c["balance"] -= payment
+
+    # ✅ Restore balances for display
+    for f in results:
+        f["balance"] = f["current_period_net"]
+
+    # 6️⃣ Determine period start / end
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
 
@@ -324,13 +352,15 @@ def calculate_stay_settlement(trip_id: int):
         "total_members": total_members,
         "per_head_cost": per_head_cost,
         "families": results,
+        "transactions": transactions,
         "carry_forward": True if previous_balance_map else False,
         "carry_forward_breakdown": [
             {"family_id": fid, "previous_balance": bal}
             for fid, bal in previous_balance_map.items()
         ],
-        "previous_settlement_id": prev_settlement_id  # 🆕 include for logging
+        "previous_settlement_id": prev_settlement_id
     }
+
 
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
     """
@@ -399,7 +429,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 1️⃣ Insert into stay_settlements
+    # 1️⃣ Insert main stay_settlements record
     cursor.execute("""
         INSERT INTO stay_settlements (
             trip_id, mode, period_start, period_end, total_expense, per_head_cost
@@ -414,11 +444,9 @@ def record_stay_settlement(trip_id: int, result: dict):
         result.get("per_head_cost")
     ))
     settlement_id = cursor.fetchone()[0]
+    conn.commit()  # FK reference safety
 
-    # ✅ Commit immediately so FK references can work
-    conn.commit()
-
-    # 2️⃣ Insert family-level details
+    # 2️⃣ Insert per-family details (non-cumulative balances)
     for fam in result["families"]:
         cursor.execute("""
             INSERT INTO stay_settlement_details (
@@ -434,16 +462,47 @@ def record_stay_settlement(trip_id: int, result: dict):
             fam["due_amount"],
             fam["balance"]
         ))
-
-    # ✅ Commit again to finalize detail rows
     conn.commit()
 
-    # 3️⃣ Log carry-forward AFTER settlements exist
+    # 3️⃣ Record carry-forward delta (only difference, not cumulative)
     previous_settlement_id = result.get("previous_settlement_id")
-    record_carry_forward_log(trip_id, previous_settlement_id, settlement_id, result["families"])
+    if previous_settlement_id:
+        cursor.execute("""
+            SELECT family_id, balance
+            FROM stay_settlement_details
+            WHERE settlement_id = %s;
+        """, (previous_settlement_id,))
+        prev_rows = cursor.fetchall()
+        prev_balance_map = {r[0]: float(r[1]) for r in prev_rows}
+    else:
+        prev_balance_map = {}
 
+    # 🧾 Log deltas (only when change detected)
+    for fam in result["families"]:
+        fid = fam["family_id"]
+        prev_balance = prev_balance_map.get(fid, 0.0)
+        new_balance = fam["balance"]
+        delta = round(new_balance - prev_balance, 2)
+
+        if abs(delta) > 0.01:  # Log only meaningful change
+            cursor.execute("""
+                INSERT INTO stay_carry_forward_log (
+                    trip_id, previous_settlement_id, new_settlement_id,
+                    family_id, previous_balance, new_balance, delta
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+            """, (
+                trip_id,
+                previous_settlement_id,
+                settlement_id,
+                fid,
+                prev_balance,
+                new_balance,
+                delta
+            ))
+    conn.commit()
     conn.close()
     return settlement_id
+
 
 
 def record_trip_settlement(trip_id: int, result: dict) -> int:
