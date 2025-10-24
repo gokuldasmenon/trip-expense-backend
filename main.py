@@ -664,7 +664,68 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to fetch carry-forward log: {e}")
 
+@app.get("/stay_carry_forward_logs/{trip_id}")
+def list_stay_carry_forward_logs(trip_id: int):
+    """
+    Returns all carry-forward log entries for a trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    cursor.execute("""
+        SELECT id, trip_id, previous_settlement_id, new_settlement_id,
+               family_id, previous_balance, new_balance, delta, created_at
+        FROM stay_carry_forward_log
+        WHERE trip_id = %s
+        ORDER BY created_at DESC;
+    """, (trip_id,))
+    logs = cursor.fetchall()
+    conn.close()
+    return {"trip_id": trip_id, "logs": logs}
+
+@app.delete("/stay_carry_forward_log/{log_id}")
+def delete_stay_carry_forward_log(log_id: int):
+    """
+    Deletes a single carry-forward log entry.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stay_carry_forward_log WHERE id = %s;", (log_id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"Carry-forward log {log_id} deleted successfully."}
+
+@app.delete("/stay_carry_forward_logs/clear/{trip_id}")
+def clear_all_stay_carry_forward_logs(trip_id: int):
+    """
+    Clears all carry-forward logs for a given trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stay_carry_forward_log WHERE trip_id = %s;", (trip_id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"All carry-forward logs cleared for trip {trip_id}."}
+
+@app.get("/stay_transactions/{settlement_id}")
+def get_stay_transactions(settlement_id: int):
+    """
+    Returns all inter-family transactions recorded for a stay settlement.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT t.id, f1.family_name AS payer, f2.family_name AS receiver, t.amount, t.created_at
+        FROM stay_transactions t
+        JOIN family_details f1 ON t.payer_family_id = f1.id
+        JOIN family_details f2 ON t.receiver_family_id = f2.id
+        WHERE t.settlement_id = %s
+        ORDER BY t.amount DESC;
+    """, (settlement_id,))
+    transactions = cursor.fetchall()
+    conn.close()
+    return {"settlement_id": settlement_id, "transactions": transactions}
 
 
 @app.get("/settlement/{trip_id}")

@@ -423,13 +423,13 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
 
 def record_stay_settlement(trip_id: int, result: dict):
     """
-    Inserts stay settlement summary and details into the database.
+    Inserts stay settlement summary, details, carry-forward logs, and transactions.
     Returns the new settlement ID.
     """
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 1️⃣ Insert main stay_settlements record
+    # 1️⃣ Insert settlement header
     cursor.execute("""
         INSERT INTO stay_settlements (
             trip_id, mode, period_start, period_end, total_expense, per_head_cost
@@ -444,9 +444,9 @@ def record_stay_settlement(trip_id: int, result: dict):
         result.get("per_head_cost")
     ))
     settlement_id = cursor.fetchone()[0]
-    conn.commit()  # FK reference safety
+    conn.commit()
 
-    # 2️⃣ Insert per-family details (non-cumulative balances)
+    # 2️⃣ Insert family-level balances
     for fam in result["families"]:
         cursor.execute("""
             INSERT INTO stay_settlement_details (
@@ -464,8 +464,9 @@ def record_stay_settlement(trip_id: int, result: dict):
         ))
     conn.commit()
 
-    # 3️⃣ Record carry-forward delta (only difference, not cumulative)
+    # 3️⃣ Record carry-forward delta only when different
     previous_settlement_id = result.get("previous_settlement_id")
+    prev_balance_map = {}
     if previous_settlement_id:
         cursor.execute("""
             SELECT family_id, balance
@@ -474,17 +475,13 @@ def record_stay_settlement(trip_id: int, result: dict):
         """, (previous_settlement_id,))
         prev_rows = cursor.fetchall()
         prev_balance_map = {r[0]: float(r[1]) for r in prev_rows}
-    else:
-        prev_balance_map = {}
 
-    # 🧾 Log deltas (only when change detected)
     for fam in result["families"]:
         fid = fam["family_id"]
         prev_balance = prev_balance_map.get(fid, 0.0)
         new_balance = fam["balance"]
         delta = round(new_balance - prev_balance, 2)
-
-        if abs(delta) > 0.01:  # Log only meaningful change
+        if abs(delta) > 0.01:
             cursor.execute("""
                 INSERT INTO stay_carry_forward_log (
                     trip_id, previous_settlement_id, new_settlement_id,
@@ -500,8 +497,34 @@ def record_stay_settlement(trip_id: int, result: dict):
                 delta
             ))
     conn.commit()
+
+    # 4️⃣ 🔄 Store settlement transactions
+    transactions = result.get("transactions", [])
+    if transactions:
+        for t in transactions:
+            # Find family IDs for payer & receiver
+            cursor.execute("SELECT id FROM family_details WHERE trip_id=%s AND family_name=%s;", (trip_id, t["from"]))
+            payer_row = cursor.fetchone()
+            cursor.execute("SELECT id FROM family_details WHERE trip_id=%s AND family_name=%s;", (trip_id, t["to"]))
+            receiver_row = cursor.fetchone()
+
+            if payer_row and receiver_row:
+                cursor.execute("""
+                    INSERT INTO stay_transactions (
+                        trip_id, settlement_id, payer_family_id, receiver_family_id, amount
+                    ) VALUES (%s, %s, %s, %s, %s);
+                """, (
+                    trip_id,
+                    settlement_id,
+                    payer_row[0],
+                    receiver_row[0],
+                    t["amount"]
+                ))
+        conn.commit()
+
     conn.close()
     return settlement_id
+
 
 
 
