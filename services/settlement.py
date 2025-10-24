@@ -216,110 +216,95 @@ def get_last_stay_settlement(trip_id: int):
 # ===============================================
 # 💰 CALCULATE STAY SETTLEMENT
 # ===============================================
-def calculate_stay_settlement(trip_id: int, start_date=None, end_date=None, carry_forward=True):
+def calculate_stay_settlement(trip_id: int):
+    """
+    Calculates stay settlement for a trip.
+    Automatically carries forward previous balances.
+    """
+    import psycopg2.extras
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # ✅ Fetch all families for this trip
+    # 1️⃣ Get total expenses and per-head cost
     cursor.execute("""
-        SELECT id, family_name, members_count
+        SELECT COALESCE(SUM(amount), 0) AS total_expense
+        FROM expenses
+        WHERE trip_id = %s;
+    """, (trip_id,))
+    total_expense = float(cursor.fetchone()["total_expense"])
+
+    cursor.execute("""
+        SELECT COALESCE(SUM(members_count), 0) AS total_members
         FROM family_details
-        WHERE trip_id = %s
+        WHERE trip_id = %s;
+    """, (trip_id,))
+    total_members = int(cursor.fetchone()["total_members"]) or 1
+    per_head_cost = round(total_expense / total_members, 2)
+
+    # 2️⃣ Fetch latest previous balances (if any)
+    cursor.execute("""
+        SELECT family_id, balance
+        FROM stay_settlement_details
+        WHERE settlement_id = (
+            SELECT id FROM stay_settlements
+            WHERE trip_id = %s
+            ORDER BY id DESC LIMIT 1
+        );
+    """, (trip_id,))
+    prev_rows = cursor.fetchall()
+    previous_balance_map = {r["family_id"]: float(r["balance"]) for r in prev_rows} if prev_rows else {}
+
+    # 3️⃣ Compute current family results
+    cursor.execute("""
+        SELECT id AS family_id, family_name, members_count
+        FROM family_details
+        WHERE trip_id = %s;
     """, (trip_id,))
     families = cursor.fetchall()
-    if not families:
-        raise Exception("No families found for this stay trip.")
 
-    family_ids = [f["id"] for f in families]
-    family_names = {f["id"]: f["family_name"] for f in families}
-    family_members = {f["id"]: f["members_count"] for f in families}
+    results = []
+    for f in families:
+        family_id = f["family_id"]
+        members_count = f["members_count"]
 
-    # ✅ Get all expenses within the requested period
-    if start_date and end_date:
         cursor.execute("""
-            SELECT payer_family_id, amount
+            SELECT COALESCE(SUM(amount), 0) AS spent
             FROM expenses
-            WHERE trip_id = %s AND date BETWEEN %s AND %s
-        """, (trip_id, start_date, end_date))
-    else:
-        cursor.execute("""
-            SELECT payer_family_id, amount
-            FROM expenses
-            WHERE trip_id = %s
-        """, (trip_id,))
-    expenses = cursor.fetchall()
+            WHERE trip_id = %s AND payer_id = %s;
+        """, (trip_id, family_id))
+        total_spent = float(cursor.fetchone()["spent"])
 
-    total_expense = 0.0
-    expense_balance = {fid: 0.0 for fid in family_ids}
+        due_amount = round(per_head_cost * members_count, 2)
+        current_period_net = round(total_spent - due_amount, 2)
+        prev_balance = previous_balance_map.get(family_id, 0.0)
+        new_balance = round(prev_balance + current_period_net, 2)
 
-    for e in expenses:
-        fid = e["payer_family_id"]
-        amt = float(e["amount"])
-        if fid in expense_balance:
-            expense_balance[fid] += amt
-            total_expense += amt
-
-    total_members = sum(family_members.values())
-    per_head_cost = total_expense / total_members if total_members > 0 else 0.0
-    expected_share = {fid: family_members[fid] * per_head_cost for fid in family_ids}
-
-    # ✅ Carry-forward logic
-    previous_balances = {fid: 0.0 for fid in family_ids}
-    carry_forward_breakdown = []
-
-    if carry_forward:
-        last_settlement = get_last_stay_settlement(trip_id)
-        if last_settlement:
-            cursor.execute("""
-                SELECT family_id, balance
-                FROM stay_settlement_details
-                WHERE settlement_id = %s
-            """, (last_settlement["id"],))
-            rows = cursor.fetchall()
-            for row in rows:
-                previous_balances[row["family_id"]] = float(row["balance"])
-
-            carry_forward_breakdown = [
-                {
-                    "family_id": row["family_id"],
-                    "family_name": family_names.get(row["family_id"], "Unknown"),
-                    "previous_balance": float(row["balance"])
-                }
-                for row in rows
-            ]
-
-    # ✅ Compute per-family balances
-    family_results = []
-    for fid in family_ids:
-        paid = expense_balance.get(fid, 0.0)
-        owed = expected_share.get(fid, 0.0)
-        prev = previous_balances.get(fid, 0.0)
-        current_net = paid - owed
-        final_balance = prev + current_net
-        family_results.append({
-            "family_id": fid,
-            "family_name": family_names[fid],
-            "members_count": family_members[fid],
-            "total_spent": round(paid, 2),
-            "due_amount": round(owed, 2),
-            "previous_balance": round(prev, 2),
-            "current_period_net": round(current_net, 2),
-            "balance": round(final_balance, 2)
+        results.append({
+            "family_id": family_id,
+            "family_name": f["family_name"],
+            "members_count": members_count,
+            "total_spent": total_spent,
+            "due_amount": due_amount,
+            "previous_balance": prev_balance,
+            "current_period_net": current_period_net,
+            "balance": new_balance
         })
 
-    cursor.close()
     conn.close()
 
     return {
-        "period_start": start_date,
-        "period_end": end_date,
-        "total_expense": round(total_expense, 2),
+        "period_start": None,
+        "period_end": None,
+        "total_expense": total_expense,
         "total_members": total_members,
-        "per_head_cost": round(per_head_cost, 2),
-        "families": family_results,
-        "carry_forward": carry_forward,
-        "carry_forward_breakdown": carry_forward_breakdown
+        "per_head_cost": per_head_cost,
+        "families": results,
+        "carry_forward": True,
+        "carry_forward_breakdown": [
+            {"family_id": fid, "previous_balance": bal} for fid, bal in previous_balance_map.items()
+        ],
     }
+
 
 
 
