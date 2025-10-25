@@ -319,22 +319,25 @@ def calculate_stay_settlement(trip_id: int):
         FROM settlement_transactions
         WHERE trip_id = %s;
     """, (trip_id,))
-    transactions = cursor.fetchall()
+    txns = cursor.fetchall()
 
-    # Build a quick lookup of payment effects
+    # Build a quick lookup of payment effects:
+    #  - Payer (from) gets +amount (they owe less / become less negative)
+    #  - Receiver (to) gets -amount (they are owed less / become less positive)
     payment_adjustments = {}
-    for txn in transactions:
+    for txn in txns:
         from_id = txn["from_family_id"]
-        to_id = txn["to_family_id"]
-        amt = float(txn["amount"])
-        payment_adjustments[from_id] = payment_adjustments.get(from_id, 0) + amt
-        payment_adjustments[to_id] = payment_adjustments.get(to_id, 0) - amt
+        to_id   = txn["to_family_id"]
+        amt     = float(txn["amount"])
+        payment_adjustments[from_id] = payment_adjustments.get(from_id, 0.0) + amt
+        payment_adjustments[to_id]   = payment_adjustments.get(to_id,   0.0) - amt
 
-    # Apply adjustments to each family's new balance
+    # ✅ Correct formula: adjusted = balance + adjustment
     for f in results:
         fid = f["family_id"]
-        adjustment = payment_adjustments.get(fid, 0)
-        f["adjusted_balance"] = round(f["balance"] - adjustment, 2)
+        adjustment = payment_adjustments.get(fid, 0.0)
+        f["adjusted_balance"] = round(f["balance"] + adjustment, 2)
+
 
 
     # 5️⃣ Compute per-family settlement transactions (who pays whom)
