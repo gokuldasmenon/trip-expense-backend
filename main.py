@@ -667,20 +667,33 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
 @app.get("/stay_carry_forward_logs/{trip_id}")
 def list_stay_carry_forward_logs(trip_id: int):
     """
-    Returns all carry-forward log entries for a trip.
+    Returns all carry-forward log entries for a trip, including family names.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     cursor.execute("""
-        SELECT id, trip_id, previous_settlement_id, new_settlement_id,
-               family_id, previous_balance, new_balance, delta, created_at
-        FROM stay_carry_forward_log
-        WHERE trip_id = %s
-        ORDER BY created_at DESC;
+        SELECT 
+            log.id,
+            log.trip_id,
+            log.previous_settlement_id,
+            log.new_settlement_id,
+            log.family_id,
+            f.family_name,
+            log.previous_balance,
+            log.new_balance,
+            log.delta,
+            log.created_at
+        FROM stay_carry_forward_log log
+        LEFT JOIN family_details f ON log.family_id = f.id
+        WHERE log.trip_id = %s
+        ORDER BY log.created_at DESC;
     """, (trip_id,))
+
     logs = cursor.fetchall()
+
     conn.close()
+
     return {"trip_id": trip_id, "logs": logs}
 
 @app.delete("/stay_carry_forward_log/{log_id}")
