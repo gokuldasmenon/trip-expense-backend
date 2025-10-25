@@ -551,7 +551,68 @@ def get_stay_settlement_detail(settlement_id: int):
     settlement["details"] = details
     return settlement
 
+@app.post("/settlement_transaction")
+def add_settlement_transaction(payload: dict):
+    """
+    Records an actual settlement transaction (money transfer).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
 
+    cursor.execute("""
+        INSERT INTO settlement_transactions (
+            trip_id, from_family_id, to_family_id, amount, remarks
+        ) VALUES (%s, %s, %s, %s, %s)
+        RETURNING id;
+    """, (
+        payload["trip_id"],
+        payload["from_family_id"],
+        payload["to_family_id"],
+        payload["amount"],
+        payload.get("remarks")
+    ))
+
+    transaction_id = cursor.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    return {"message": "Transaction recorded successfully", "transaction_id": transaction_id}
+
+@app.get("/settlement_transactions/{trip_id}")
+def get_settlement_transactions(trip_id: int):
+    """
+    Returns all recorded settlement transactions for a given trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT 
+            t.id,
+            t.trip_id,
+            t.amount,
+            t.transaction_date,
+            t.remarks,
+            f1.family_name AS from_family,
+            f2.family_name AS to_family
+        FROM settlement_transactions t
+        JOIN family_details f1 ON t.from_family_id = f1.id
+        JOIN family_details f2 ON t.to_family_id = f2.id
+        WHERE t.trip_id = %s
+        ORDER BY t.transaction_date DESC;
+    """, (trip_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+    return {"trip_id": trip_id, "transactions": rows}
+@app.delete("/settlement_transaction/{id}")
+def delete_settlement_transaction(id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM settlement_transactions WHERE id = %s;", (id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"Transaction {id} deleted successfully"}
 # ==========================================
 # 🏠 RECORD A STAY SETTLEMENT
 # ==========================================
