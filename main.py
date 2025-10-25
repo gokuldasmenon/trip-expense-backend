@@ -605,6 +605,30 @@ def get_settlement_transactions(trip_id: int):
     rows = cursor.fetchall()
     conn.close()
     return {"trip_id": trip_id, "transactions": rows}
+
+@app.get("/settlement_transactions_archive/{trip_id}")
+def get_archived_transactions(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT 
+            a.id,
+            a.amount,
+            a.transaction_date,
+            a.remarks,
+            f1.family_name AS from_family,
+            f2.family_name AS to_family,
+            a.archived_at
+        FROM settlement_transactions_archive a
+        JOIN family_details f1 ON a.from_family_id = f1.id
+        JOIN family_details f2 ON a.to_family_id = f2.id
+        WHERE a.trip_id = %s
+        ORDER BY a.archived_at DESC;
+    """, (trip_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return {"trip_id": trip_id, "archived_transactions": rows}
 @app.delete("/settlement_transaction/{id}")
 def delete_settlement_transaction(id: int):
     conn = get_connection()
