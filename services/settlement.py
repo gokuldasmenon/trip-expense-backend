@@ -313,6 +313,29 @@ def calculate_stay_settlement(trip_id: int):
             "current_period_net": current_period_net,
             "balance": new_balance
         })
+    # 🧾 5️⃣ Apply settlement transactions to adjust balances
+    cursor.execute("""
+        SELECT from_family_id, to_family_id, amount
+        FROM settlement_transactions
+        WHERE trip_id = %s;
+    """, (trip_id,))
+    transactions = cursor.fetchall()
+
+    # Build a quick lookup of payment effects
+    payment_adjustments = {}
+    for txn in transactions:
+        from_id = txn["from_family_id"]
+        to_id = txn["to_family_id"]
+        amt = float(txn["amount"])
+        payment_adjustments[from_id] = payment_adjustments.get(from_id, 0) + amt
+        payment_adjustments[to_id] = payment_adjustments.get(to_id, 0) - amt
+
+    # Apply adjustments to each family's new balance
+    for f in results:
+        fid = f["family_id"]
+        adjustment = payment_adjustments.get(fid, 0)
+        f["adjusted_balance"] = round(f["balance"] - adjustment, 2)
+
 
     # 5️⃣ Compute per-family settlement transactions (who pays whom)
     debtors = [f for f in results if f["balance"] < 0]
@@ -352,6 +375,7 @@ def calculate_stay_settlement(trip_id: int):
         "total_members": total_members,
         "per_head_cost": per_head_cost,
         "families": results,
+        "transactions_applied": bool(transactions),
         "transactions": transactions,
         "carry_forward": True if previous_balance_map else False,
         "carry_forward_breakdown": [
