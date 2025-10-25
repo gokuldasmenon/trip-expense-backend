@@ -224,44 +224,30 @@ import psycopg2.extras
 
 def calculate_stay_settlement(trip_id: int):
     """
-    Calculates stay settlement for a trip with carry-forward support
-    and corrects duplication of balances when recording multiple times.
+    Calculates stay settlement for a trip with carry-forward and payment adjustments.
+    Ensures Adjusted balances reflect applied settlement transactions.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 1️⃣ Get total expenses and per-head cost
-    cursor.execute("""
-        SELECT COALESCE(SUM(amount), 0) AS total_expense
-        FROM expenses
-        WHERE trip_id = %s;
-    """, (trip_id,))
+    # 1️⃣ Get total expense and per-head cost
+    cursor.execute("SELECT COALESCE(SUM(amount), 0) AS total_expense FROM expenses WHERE trip_id = %s;", (trip_id,))
     total_expense = float(cursor.fetchone()["total_expense"] or 0)
 
-    cursor.execute("""
-        SELECT COALESCE(SUM(members_count), 0) AS total_members
-        FROM family_details
-        WHERE trip_id = %s;
-    """, (trip_id,))
+    cursor.execute("SELECT COALESCE(SUM(members_count), 0) AS total_members FROM family_details WHERE trip_id = %s;", (trip_id,))
     total_members = int(cursor.fetchone()["total_members"] or 1)
     per_head_cost = round(total_expense / total_members, 2)
 
-    # 2️⃣ Find previous settlement
+    # 2️⃣ Get previous settlement
     cursor.execute("""
         SELECT id, period_end
         FROM stay_settlements
         WHERE trip_id = %s
-        ORDER BY id DESC
-        LIMIT 1;
+        ORDER BY id DESC LIMIT 1;
     """, (trip_id,))
     prev = cursor.fetchone()
-
-    if prev:
-        prev_settlement_id = prev["id"]
-        prev_end_date = prev["period_end"]
-    else:
-        prev_settlement_id = None
-        prev_end_date = None
+    prev_settlement_id = prev["id"] if prev else None
+    prev_end_date = prev["period_end"] if prev else None
 
     # 3️⃣ Load previous balances (carry-forward)
     previous_balance_map = {}
@@ -271,105 +257,66 @@ def calculate_stay_settlement(trip_id: int):
             FROM stay_settlement_details
             WHERE settlement_id = %s;
         """, (prev_settlement_id,))
-        prev_rows = cursor.fetchall()
-        previous_balance_map = {r["family_id"]: float(r["balance"]) for r in prev_rows}
+        for row in cursor.fetchall():
+            previous_balance_map[row["family_id"]] = float(row["balance"])
 
-    # 4️⃣ Compute family-level settlement
-    cursor.execute("""
-        SELECT id AS family_id, family_name, members_count
-        FROM family_details
-        WHERE trip_id = %s;
-    """, (trip_id,))
+    # 4️⃣ Compute each family’s net balance
+    cursor.execute("SELECT id AS family_id, family_name, members_count FROM family_details WHERE trip_id = %s;", (trip_id,))
     families = cursor.fetchall()
 
     results = []
     for f in families:
         family_id = f["family_id"]
-        members_count = f["members_count"]
-
-        # ✅ Correct expense calculation
         cursor.execute("""
             SELECT COALESCE(SUM(amount), 0) AS spent
             FROM expenses
             WHERE trip_id = %s AND payer_family_id = %s;
         """, (trip_id, family_id))
-        total_spent = float(cursor.fetchone()["spent"] or 0)
-
-        due_amount = round(per_head_cost * members_count, 2)
-        current_period_net = round(total_spent - due_amount, 2)
+        spent = float(cursor.fetchone()["spent"] or 0)
+        due = round(per_head_cost * f["members_count"], 2)
+        balance = round(spent - due, 2)
         prev_balance = previous_balance_map.get(family_id, 0.0)
-
-        # ✅ FIXED: Do not cumulatively add balances
-        # Carry forward exists only for reference; balance reflects actual net position.
-        new_balance = round(current_period_net, 2)
 
         results.append({
             "family_id": family_id,
             "family_name": f["family_name"],
-            "members_count": members_count,
-            "total_spent": total_spent,
-            "due_amount": due_amount,
+            "members_count": f["members_count"],
+            "total_spent": spent,
+            "due_amount": due,
             "previous_balance": prev_balance,
-            "current_period_net": current_period_net,
-            "balance": new_balance
+            "balance": balance,
         })
-    # 🧾 5️⃣ Apply settlement transactions to adjust balances
+
+    # 5️⃣ Fetch active settlement transactions (adjustments)
     cursor.execute("""
         SELECT from_family_id, to_family_id, amount
         FROM settlement_transactions
         WHERE trip_id = %s;
     """, (trip_id,))
-    txns = cursor.fetchall()
+    transactions = cursor.fetchall()
 
-    # Build a quick lookup of payment effects:
-    #  - Payer (from) gets +amount (they owe less / become less negative)
-    #  - Receiver (to) gets -amount (they are owed less / become less positive)
-    payment_adjustments = {}
-    for txn in txns:
-        from_id = txn["from_family_id"]
-        to_id   = txn["to_family_id"]
-        amt     = float(txn["amount"])
-        payment_adjustments[from_id] = payment_adjustments.get(from_id, 0.0) + amt
-        payment_adjustments[to_id]   = payment_adjustments.get(to_id,   0.0) - amt
+    # 6️⃣ Build adjustment map
+    adjustments = {}
+    for txn in transactions:
+        f_from = txn["from_family_id"]
+        f_to = txn["to_family_id"]
+        amt = float(txn["amount"])
+        adjustments[f_from] = adjustments.get(f_from, 0.0) + amt   # payer gets +amt
+        adjustments[f_to] = adjustments.get(f_to, 0.0) - amt       # receiver gets -amt
 
-    # ✅ Correct formula: adjusted = balance + adjustment
+    # 7️⃣ Apply adjustment per family
     for f in results:
         fid = f["family_id"]
-        adjustment = payment_adjustments.get(fid, 0.0)
-        f["adjusted_balance"] = round(f["balance"] + adjustment, 2)
+        adj = adjustments.get(fid, 0.0)
+        f["adjusted_balance"] = round(f["balance"] + adj, 2)
 
-
-
-    # 5️⃣ Compute per-family settlement transactions (who pays whom)
-    debtors = [f for f in results if f["balance"] < 0]
-    creditors = [f for f in results if f["balance"] > 0]
-    transactions = []
-
-    for d in debtors:
-        owed = abs(d["balance"])
-        for c in creditors:
-            if owed <= 0:
-                break
-            if c["balance"] <= 0:
-                continue
-            payment = min(owed, c["balance"])
-            transactions.append({
-                "from": d["family_name"],
-                "to": c["family_name"],
-                "amount": round(payment, 2)
-            })
-            owed -= payment
-            c["balance"] -= payment
-
-    # ✅ Restore balances for display
-    for f in results:
-        f["balance"] = f["current_period_net"]
-
-    # 6️⃣ Determine period start / end
+    # 8️⃣ Compute period
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
 
     conn.close()
+
+    print(f"✅ Settlement computed for trip {trip_id}: adjustments={adjustments}")
 
     return {
         "period_start": period_start,
@@ -378,15 +325,15 @@ def calculate_stay_settlement(trip_id: int):
         "total_members": total_members,
         "per_head_cost": per_head_cost,
         "families": results,
-        "transactions_applied": bool(transactions),
-        "transactions": transactions,
-        "carry_forward": True if previous_balance_map else False,
+        "carry_forward": bool(previous_balance_map),
         "carry_forward_breakdown": [
             {"family_id": fid, "previous_balance": bal}
             for fid, bal in previous_balance_map.items()
         ],
-        "previous_settlement_id": prev_settlement_id
+        "previous_settlement_id": prev_settlement_id,
+        "transactions": transactions,
     }
+
 
 
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
@@ -544,6 +491,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn.close()
     print(f"🏁 Stay settlement completed successfully (ID={settlement_id})\n")
     return settlement_id
+
 
 
 
