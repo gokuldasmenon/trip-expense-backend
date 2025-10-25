@@ -450,14 +450,31 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
 
 def record_stay_settlement(trip_id: int, result: dict):
     """
-    Inserts stay settlement summary and details into the database.
-    Returns the new settlement ID.
-    Also records carry-forward log and archives applied transactions.
+    Finalizes a stay settlement:
+    - Saves summary and per-family balances (adjusted for payments)
+    - Records carry-forward log (if any)
+    - Archives active transactions
+    - Returns new settlement_id
     """
     conn = get_connection()
     cursor = conn.cursor()
 
-    # 1️⃣ Insert into stay_settlements
+    print(f"🧾 Finalizing stay settlement for trip {trip_id}...")
+
+    # 0️⃣ Prevent double-finalization in same session
+    cursor.execute("""
+        SELECT id FROM stay_settlements 
+        WHERE trip_id = %s
+        ORDER BY id DESC LIMIT 1;
+    """, (trip_id,))
+    existing = cursor.fetchone()
+
+    if existing and result.get("previous_settlement_id") == existing[0]:
+        print(f"⚠️ Settlement for trip {trip_id} already finalized recently — skipping duplicate.")
+        conn.close()
+        return existing[0]
+
+    # 1️⃣ Insert into stay_settlements summary table
     cursor.execute("""
         INSERT INTO stay_settlements (
             trip_id, mode, period_start, period_end, total_expense, per_head_cost
@@ -473,14 +490,17 @@ def record_stay_settlement(trip_id: int, result: dict):
     ))
     settlement_id = cursor.fetchone()[0]
     conn.commit()
+    print(f"✅ Settlement summary saved (ID={settlement_id})")
 
-    # 2️⃣ Insert family-level details
+    # 2️⃣ Insert family-level details — using adjusted balance after payments
     for fam in result["families"]:
+        balance_value = fam.get("adjusted_balance", fam.get("balance", 0))
         cursor.execute("""
             INSERT INTO stay_settlement_details (
                 settlement_id, family_id, family_name, members_count,
                 total_spent, due_amount, balance
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s);
         """, (
             settlement_id,
             fam["family_id"],
@@ -488,19 +508,20 @@ def record_stay_settlement(trip_id: int, result: dict):
             fam["members_count"],
             fam["total_spent"],
             fam["due_amount"],
-            fam.get("adjusted_balance", fam["balance"])  # ✅ adjusted after payments
+            round(balance_value, 2)
         ))
-
     conn.commit()
+    print("✅ Family-level settlement details saved.")
 
-    # 3️⃣ Record carry-forward log if previous settlement exists
+    # 3️⃣ Record carry-forward log after settlement details
     previous_settlement_id = result.get("previous_settlement_id")
     try:
         record_carry_forward_log(trip_id, previous_settlement_id, settlement_id, result["families"])
+        print("📦 Carry-forward log recorded.")
     except Exception as e:
-        print(f"⚠️ Warning: Carry-forward logging failed — continuing. Error: {e}")
+        print(f"⚠️ Carry-forward log skipped due to error: {e}")
 
-    # 4️⃣ Auto-archive & clear settlement transactions once applied
+    # 4️⃣ Archive settlement transactions after applying them
     try:
         cursor.execute("""
             INSERT INTO settlement_transactions_archive (
@@ -511,15 +532,19 @@ def record_stay_settlement(trip_id: int, result: dict):
             WHERE trip_id = %s;
         """, (settlement_id, trip_id))
 
+        archived_count = cursor.rowcount
+
         cursor.execute("DELETE FROM settlement_transactions WHERE trip_id = %s;", (trip_id,))
         conn.commit()
-        print(f"🧹 Settlement transactions archived and cleared for trip_id={trip_id}")
+        print(f"🗃️ Archived and cleared {archived_count} settlement transaction(s) for trip_id={trip_id}")
 
     except Exception as e:
-        print(f"⚠️ Warning: Failed to archive/clear settlement transactions — {e}")
+        print(f"⚠️ Failed to archive/clear settlement transactions — {e}")
 
     conn.close()
+    print(f"🏁 Stay settlement completed successfully (ID={settlement_id})\n")
     return settlement_id
+
 
 
 
