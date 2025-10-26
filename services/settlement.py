@@ -2,7 +2,7 @@
 from database import get_connection
 import psycopg2.extras
 from datetime import datetime
-
+import json
 def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -344,7 +344,12 @@ def calculate_stay_settlement(trip_id: int):
         f["due_amount"] = float(f["due_amount"])
         f["balance"] = float(f["balance"])
         f["adjusted_balance"] = float(f.get("adjusted_balance", f["balance"]))
-
+    print("🧩 DEBUG families (just before return):")
+    try:
+        print(json.dumps(results, indent=2))
+    except Exception as e:
+        print("⚠️ Could not JSON-encode results:", e)
+        print(results)
     return {
         "period_start": period_start,
         "period_end": period_end,
