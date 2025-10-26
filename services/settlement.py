@@ -308,7 +308,7 @@ def calculate_stay_settlement(trip_id: int):
               );
         """, (trip_id, trip_id))
         transactions = cursor.fetchall()
-
+        print(f"📦 Using archived transactions fallback for trip {trip_id}")
     # 6️⃣ Build adjustment map
     adjustments = {}
     for txn in transactions:
