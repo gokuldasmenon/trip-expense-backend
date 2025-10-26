@@ -302,13 +302,13 @@ def calculate_stay_settlement(trip_id: int):
             FROM settlement_transactions_archive
             WHERE trip_id = %s
               AND settlement_id = (
-                  SELECT id FROM stay_settlements
+                  SELECT MAX(id)
+                  FROM stay_settlements
                   WHERE trip_id = %s
-                  ORDER BY id DESC LIMIT 1
               );
         """, (trip_id, trip_id))
         transactions = cursor.fetchall()
-        print(f"📦 Using archived transactions fallback for trip {trip_id}")
+        print(f"📦 Using archived transactions fallback for trip {trip_id} — found {len(transactions)} record(s).")
     # 6️⃣ Build adjustment map
     adjustments = {}
     for txn in transactions:
@@ -323,7 +323,9 @@ def calculate_stay_settlement(trip_id: int):
         fid = f["family_id"]
         adj = adjustments.get(fid, 0.0)
         f["adjusted_balance"] = round(f["balance"] + adj, 2)
-
+    print(f"  Adjustments applied per family: {adjustments}")
+    for f in results:
+        print(f"  ▶ {f['family_name']}: Net={f['balance']} + Adj={adjustments.get(f['family_id'],0)} → Adjusted={f['adjusted_balance']}")
     # 8️⃣ Compute period
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
@@ -499,11 +501,11 @@ def record_stay_settlement(trip_id: int, result: dict):
             WHERE trip_id = %s;
         """, (settlement_id, trip_id))
 
-        archived_count = cursor.rowcount
-
+        
+        conn.commit()
         cursor.execute("DELETE FROM settlement_transactions WHERE trip_id = %s;", (trip_id,))
         conn.commit()
-        print(f"🗃️ Archived and cleared {archived_count} settlement transaction(s) for trip_id={trip_id}")
+        print(f"📦 Archived and cleared settlement transactions for trip_id={trip_id} → settlement_id={settlement_id}")
 
     except Exception as e:
         print(f"⚠️ Failed to archive/clear settlement transactions — {e}")
