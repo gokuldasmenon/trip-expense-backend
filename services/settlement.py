@@ -337,7 +337,13 @@ def calculate_stay_settlement(trip_id: int):
     for f in results:
         raw_adj = round(f["adjusted_balance"] - f["balance"], 2)
         print(f"  ▶ {f['family_name']}: Net={f['balance']}, Applied Adj={raw_adj}, Adjusted={f['adjusted_balance']}")
-
+    for f in results:
+        f["family_id"] = int(f["family_id"])
+        f["members_count"] = int(f["members_count"])
+        f["total_spent"] = float(f["total_spent"])
+        f["due_amount"] = float(f["due_amount"])
+        f["balance"] = float(f["balance"])
+        f["adjusted_balance"] = float(f.get("adjusted_balance", f["balance"]))
 
     return {
         "period_start": period_start,
