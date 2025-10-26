@@ -295,6 +295,19 @@ def calculate_stay_settlement(trip_id: int):
     """, (trip_id,))
     transactions = cursor.fetchall()
 
+    # If none active, pull the most recent archived ones
+    if not transactions:
+        cursor.execute("""
+            SELECT from_family_id, to_family_id, amount
+            FROM settlement_transactions_archive
+            WHERE trip_id = %s
+            AND settlement_id = (
+                SELECT id FROM stay_settlements
+                WHERE trip_id = %s
+                ORDER BY id DESC LIMIT 1
+            );
+        """, (trip_id, trip_id))
+        transactions = cursor.fetchall()
         # 6️⃣ Build adjustment map (debug-enabled)
     adjustments = {}
     print("\n🧾 Settlement Transactions:")

@@ -843,7 +843,7 @@ def unified_settlement_endpoint(
     try:
         print(f"🧮 Starting unified settlement computation for trip_id={trip_id}, mode={mode}")
 
-        if mode.upper() == "STAY":
+        if mode.upper() == "STAY"and record:
             # =============================
             # 🏠 STAY MODE CALCULATION
             # =============================
