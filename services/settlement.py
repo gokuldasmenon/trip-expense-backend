@@ -333,7 +333,9 @@ def calculate_stay_settlement(trip_id: int):
     print(f"✅ Settlement computed for trip {trip_id}:")
     print(f"  Adjustments map: {adjustments}")
     for f in results:
-        print(f"  ▶ {f['family_name']}: Net={f['balance']}, Adj={f['adjusted_balance']}")
+        raw_adj = round(f["adjusted_balance"] - f["balance"], 2)
+        print(f"  ▶ {f['family_name']}: Net={f['balance']}, Applied Adj={raw_adj}, Adjusted={f['adjusted_balance']}")
+
 
     return {
         "period_start": period_start,
