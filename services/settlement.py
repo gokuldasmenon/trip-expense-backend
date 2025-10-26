@@ -302,7 +302,7 @@ def calculate_stay_settlement(trip_id: int):
         f_to = txn["to_family_id"]
         amt = float(txn["amount"])
         adjustments[f_from] = adjustments.get(f_from, 0.0) - amt   # payer gets +amt
-        adjustments[f_to] = adjustments.get(f_to, 0.0) + amt       # receiver gets -amt
+        adjustments[f_to] = adjustments.get(f_to, 0.0) - amt       # receiver gets -amt
 
     # 7️⃣ Apply adjustment per family
     for f in results:
@@ -491,7 +491,6 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn.close()
     print(f"🏁 Stay settlement completed successfully (ID={settlement_id})\n")
     return settlement_id
-
 
 
 
