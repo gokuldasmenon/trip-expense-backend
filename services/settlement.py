@@ -295,20 +295,25 @@ def calculate_stay_settlement(trip_id: int):
     """, (trip_id,))
     transactions = cursor.fetchall()
 
-    # 6️⃣ Build adjustment map
+        # 6️⃣ Build adjustment map (debug-enabled)
     adjustments = {}
+    print("\n🧾 Settlement Transactions:")
     for txn in transactions:
         f_from = txn["from_family_id"]
         f_to = txn["to_family_id"]
         amt = float(txn["amount"])
-        adjustments[f_from] = adjustments.get(f_from, 0.0) - amt   # payer gets +amt
+        print(f"  TXN: from={f_from} → to={f_to} | amount={amt}")
+        adjustments[f_from] = adjustments.get(f_from, 0.0) + amt   # payer gets +amt
         adjustments[f_to] = adjustments.get(f_to, 0.0) - amt       # receiver gets -amt
+
+    print(f"📘 Adjustment map built: {adjustments}")
 
     # 7️⃣ Apply adjustment per family
     for f in results:
         fid = f["family_id"]
         adj = adjustments.get(fid, 0.0)
         f["adjusted_balance"] = round(f["balance"] + adj, 2)
+        print(f"  ▶ Family {f['family_name']} | Net={f['balance']} | Adj={adj} | Adjusted={f['adjusted_balance']}")
 
     # 8️⃣ Compute period
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
@@ -316,7 +321,10 @@ def calculate_stay_settlement(trip_id: int):
 
     conn.close()
 
-    print(f"✅ Settlement computed for trip {trip_id}: adjustments={adjustments}")
+    print(f"✅ Settlement computed for trip {trip_id}")
+    print(f"  Total expense={total_expense}, per_head={per_head_cost}")
+    print(f"  Families: {[{'name': f['family_name'], 'bal': f['balance'], 'adj': f['adjusted_balance']} for f in results]}")
+
 
     return {
         "period_start": period_start,
