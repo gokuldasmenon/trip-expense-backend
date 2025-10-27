@@ -843,22 +843,27 @@ def unified_settlement_endpoint(
     try:
         print(f"🧮 Starting unified settlement computation for trip_id={trip_id}, mode={mode}")
 
-        if mode.upper() == "STAY"and record:
-            # =============================
-            # 🏠 STAY MODE CALCULATION
-            # =============================
+        # =============================
+        # 🏠 STAY MODE CALCULATION
+        # =============================
+        if mode.upper() == "STAY":
             result = calculate_stay_settlement(trip_id)
-
             result["mode"] = "STAY"
             result["timestamp"] = datetime.utcnow().isoformat()
 
-            # Add carry-forward summary for reporting
-            if "families" in result:
-                result["carry_forward_total"] = round(
-                    sum(f.get("previous_balance", 0.0) for f in result["families"]), 2
-                )
+            # ✅ Ensure adjusted_balance always exists and is numeric
+            for fam in result.get("families", []):
+                if "adjusted_balance" not in fam:
+                    fam["adjusted_balance"] = fam.get("balance", 0.0)
+                elif fam["adjusted_balance"] is None:
+                    fam["adjusted_balance"] = float(fam.get("balance", 0.0))
+                else:
+                    fam["adjusted_balance"] = float(fam["adjusted_balance"])
 
-            # Compact summary for dashboard view
+            # 🧾 Carry-forward and summary
+            result["carry_forward_total"] = round(
+                sum(f.get("previous_balance", 0.0) for f in result["families"]), 2
+            )
             result["summary"] = {
                 "total_expense": result.get("total_expense", 0.0),
                 "total_members": result.get("total_members", 0),
@@ -866,23 +871,36 @@ def unified_settlement_endpoint(
                 "families_count": len(result.get("families", []))
             }
 
-            # 📝 Optionally record it
+            # 📝 Optionally record this settlement
             if record:
                 settlement_id = record_stay_settlement(trip_id, result)
                 result["recorded_settlement_id"] = settlement_id
                 result["message"] = f"Stay settlement recorded successfully (ID {settlement_id})"
 
+            print(f"✅ Final STAY result families:")
+            for fam in result.get("families", []):
+                print(f"  ▶ {fam['family_name']} | Net={fam['balance']} | Adjusted={fam['adjusted_balance']}")
+
             return result
 
+        # =============================
+        # 🧳 TRIP MODE CALCULATION
+        # =============================
         else:
-            # =============================
-            # 🧳 TRIP MODE CALCULATION
-            # =============================
             result = get_settlement(trip_id)
-
             result["mode"] = "TRIP"
             result["timestamp"] = datetime.utcnow().isoformat()
 
+            # ✅ Ensure adjusted_balance exists (same logic)
+            for fam in result.get("families", []):
+                if "adjusted_balance" not in fam:
+                    fam["adjusted_balance"] = fam.get("balance", 0.0)
+                elif fam["adjusted_balance"] is None:
+                    fam["adjusted_balance"] = float(fam.get("balance", 0.0))
+                else:
+                    fam["adjusted_balance"] = float(fam["adjusted_balance"])
+
+            # 🧾 Add summary info
             result["summary"] = {
                 "total_expense": result.get("total_expense", 0.0),
                 "total_members": result.get("total_members", 0),
@@ -894,6 +912,10 @@ def unified_settlement_endpoint(
                 record_trip_settlement(trip_id, result)
                 result["message"] = "Trip settlement recorded successfully"
 
+            print(f"✅ Final TRIP result families:")
+            for fam in result.get("families", []):
+                print(f"  ▶ {fam['family_name']} | Net={fam['balance']} | Adjusted={fam['adjusted_balance']}")
+
             return result
 
     except Exception as e:
@@ -901,6 +923,7 @@ def unified_settlement_endpoint(
         print("❌ Unified settlement failed:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Settlement generation failed: {e}")
+
 
 
 @app.get("/trip_settlements/{trip_id}")
