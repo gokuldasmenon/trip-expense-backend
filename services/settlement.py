@@ -449,7 +449,7 @@ def record_stay_settlement(trip_id: int, result: dict):
 
     print(f"🧾 Finalizing stay settlement for trip {trip_id}...")
 
-    # 0️⃣ Prevent double-finalization in same session
+    # 🔍 0️⃣ Check for duplicate prevention (with safer logic)
     cursor.execute("""
         SELECT id FROM stay_settlements 
         WHERE trip_id = %s
@@ -457,8 +457,12 @@ def record_stay_settlement(trip_id: int, result: dict):
     """, (trip_id,))
     existing = cursor.fetchone()
 
-    if existing and result.get("previous_settlement_id") == existing[0]:
-        print(f"⚠️ Settlement for trip {trip_id} already finalized recently — skipping duplicate.")
+    prev_id = result.get("previous_settlement_id")
+    print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={existing[0] if existing else None}")
+
+    # ✅ Only skip if BOTH exist and are identical
+    if existing and prev_id and prev_id == existing[0]:
+        print(f"⚠️ Duplicate prevention triggered: trip {trip_id}, prev_id={prev_id}, last_settlement_id={existing[0]}")
         conn.close()
         return existing[0]
 
@@ -480,7 +484,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn.commit()
     print(f"✅ Settlement summary saved (ID={settlement_id})")
 
-    # 2️⃣ Insert family-level details — using adjusted balance after payments
+    # 2️⃣ Insert family-level details (using adjusted balances)
     for fam in result["families"]:
         balance_value = fam.get("adjusted_balance", fam.get("balance", 0))
         cursor.execute("""
@@ -504,12 +508,18 @@ def record_stay_settlement(trip_id: int, result: dict):
     # 3️⃣ Record carry-forward log after settlement details
     previous_settlement_id = result.get("previous_settlement_id")
     try:
+        print(f"🧾 Calling record_carry_forward_log(prev={previous_settlement_id}, new={settlement_id})")
         record_carry_forward_log(trip_id, previous_settlement_id, settlement_id, result["families"])
-        print("📦 Carry-forward log recorded.")
+
+        # ✅ Add quick DB verification print
+        cursor.execute("SELECT COUNT(*) FROM stay_carry_forward_log WHERE trip_id = %s;", (trip_id,))
+        log_count = cursor.fetchone()[0]
+        print(f"🔍 [DEBUG] stay_carry_forward_log now has {log_count} rows for trip {trip_id}.")
+
     except Exception as e:
         print(f"⚠️ Carry-forward log skipped due to error: {e}")
 
-    # 4️⃣ Archive settlement transactions after applying them
+    # 4️⃣ Archive settlement transactions
     try:
         cursor.execute("""
             INSERT INTO settlement_transactions_archive (
@@ -520,7 +530,6 @@ def record_stay_settlement(trip_id: int, result: dict):
             WHERE trip_id = %s;
         """, (settlement_id, trip_id))
 
-        
         conn.commit()
         cursor.execute("DELETE FROM settlement_transactions WHERE trip_id = %s;", (trip_id,))
         conn.commit()
@@ -532,6 +541,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn.close()
     print(f"🏁 Stay settlement completed successfully (ID={settlement_id})\n")
     return settlement_id
+
 
 
 
