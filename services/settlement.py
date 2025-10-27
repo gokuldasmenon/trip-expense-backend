@@ -3,6 +3,8 @@ from database import get_connection
 import psycopg2.extras
 from datetime import datetime
 import json
+from datetime import date, timedelta, datetime
+
 def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -168,9 +170,8 @@ def get_trip_summary(trip_id: int):
         "expenses": expenses,
         "settlement": settlement_data
     }
-from datetime import date, timedelta, datetime
-from database import get_connection
-import psycopg2.extras
+
+
 
 
 # ===============================================
@@ -289,9 +290,16 @@ def calculate_stay_settlement(trip_id: int):
 
     # 5️⃣ Fetch settlement transactions (active or archived)
     cursor.execute("""
-        SELECT from_family_id, to_family_id, amount
-        FROM settlement_transactions
-        WHERE trip_id = %s;
+        SELECT 
+            t.from_family_id, 
+            f1.family_name AS from_family,
+            t.to_family_id, 
+            f2.family_name AS to_family,
+            t.amount
+        FROM settlement_transactions t
+        LEFT JOIN family_details f1 ON t.from_family_id = f1.id
+        LEFT JOIN family_details f2 ON t.to_family_id = f2.id
+        WHERE t.trip_id = %s;
     """, (trip_id,))
     transactions = cursor.fetchall()
 
@@ -405,13 +413,6 @@ def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_sett
         import traceback
         print(f"⚠️ Warning: carry-forward log failed — continuing anyway. Error: {e}")
         traceback.print_exc()
-
-
-
-
-
-
-
 
 
 
