@@ -841,7 +841,7 @@ def unified_settlement_endpoint(
     """
 
     try:
-        print(f"🧮 Starting unified settlement computation for trip_id={trip_id}, mode={mode}")
+        print(f"🧮 Starting unified settlement computations for trip_id={trip_id}, mode={mode}")
 
         # =============================
         # 🏠 STAY MODE CALCULATION
