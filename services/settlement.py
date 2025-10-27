@@ -385,18 +385,18 @@ def calculate_stay_settlement(trip_id: int):
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
     """
     Logs carry-forward balances for each family from the previous to the new stay settlement.
-    Failures here are logged but do not block the main settlement.
     """
     if not previous_settlement_id:
-        print("ℹ️ No previous settlement found — skipping carry-forward log.")
+        print(f"ℹ️ [DEBUG] Trip {trip_id}: No previous settlement found — skipping carry-forward log.")
         return
 
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
-        print(f"🧾 Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
+        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
 
+        inserted_count = 0
         for fam in families:
             family_id = fam["family_id"]
             prev_balance = float(fam.get("previous_balance", 0.0))
@@ -406,18 +406,20 @@ def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_sett
             cursor.execute("""
                 INSERT INTO stay_carry_forward_log (
                     trip_id, previous_settlement_id, new_settlement_id,
-                    family_id, previous_balance, new_balance, delta
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    family_id, previous_balance, new_balance, delta, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW());
             """, (trip_id, previous_settlement_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
+            inserted_count += 1
 
         conn.commit()
         conn.close()
-        print("✅ Carry-forward log recorded successfully.")
+        print(f"✅ [DEBUG] Carry-forward log recorded successfully — {inserted_count} rows inserted into stay_carry_forward_log.")
 
     except Exception as e:
         import traceback
-        print(f"⚠️ Warning: carry-forward log failed — continuing anyway. Error: {e}")
+        print(f"⚠️ [DEBUG] Warning: carry-forward log failed for trip {trip_id} — Error: {e}")
         traceback.print_exc()
+
 
 
 
