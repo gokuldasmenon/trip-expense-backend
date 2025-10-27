@@ -444,34 +444,27 @@ def record_stay_settlement(trip_id: int, result: dict):
     - Archives active transactions
     - Returns new settlement_id
     """
-    from datetime import datetime, timezone
     conn = get_connection()
     cursor = conn.cursor()
 
     print(f"🧾 Finalizing stay settlement for trip {trip_id}...")
 
-    # 0️⃣ Check last settlement (for safety against accidental double-save)
+    # 🔍 0️⃣ Check for duplicate prevention (with safer logic)
     cursor.execute("""
-        SELECT id, created_at FROM stay_settlements 
+        SELECT id FROM stay_settlements 
         WHERE trip_id = %s
         ORDER BY id DESC LIMIT 1;
     """, (trip_id,))
     existing = cursor.fetchone()
 
     prev_id = result.get("previous_settlement_id")
-    last_id = existing[0] if existing else None
-    print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={last_id}")
+    print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={existing[0] if existing else None}")
 
-    # ✅ Prevent only *immediate re-clicks* (within 5 seconds)
-    if existing and existing[1]:
-        created_time = existing[1]
-        now = datetime.now(timezone.utc)
-        seconds_since = (now - created_time).total_seconds()
-        if seconds_since < 5:
-            print(f"⚠️ Skipping duplicate immediate submission for trip {trip_id} "
-                  f"(last finalized {seconds_since:.1f}s ago)")
-            conn.close()
-            return last_id
+    # ✅ Only skip if BOTH exist and are identical
+    if existing and prev_id and prev_id == existing[0]:
+        print(f"⚠️ Duplicate prevention triggered: trip {trip_id}, prev_id={prev_id}, last_settlement_id={existing[0]}")
+        conn.close()
+        return existing[0]
 
     # 1️⃣ Insert into stay_settlements summary table
     cursor.execute("""
@@ -518,7 +511,7 @@ def record_stay_settlement(trip_id: int, result: dict):
         print(f"🧾 Calling record_carry_forward_log(prev={previous_settlement_id}, new={settlement_id})")
         record_carry_forward_log(trip_id, previous_settlement_id, settlement_id, result["families"])
 
-        # 🧮 Verify in DB
+        # ✅ Add quick DB verification print
         cursor.execute("SELECT COUNT(*) FROM stay_carry_forward_log WHERE trip_id = %s;", (trip_id,))
         log_count = cursor.fetchone()[0]
         print(f"🔍 [DEBUG] stay_carry_forward_log now has {log_count} rows for trip {trip_id}.")
@@ -548,7 +541,6 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn.close()
     print(f"🏁 Stay settlement completed successfully (ID={settlement_id})\n")
     return settlement_id
-
 
 
 
