@@ -303,6 +303,11 @@ def calculate_stay_settlement(trip_id: int):
     """, (trip_id,))
     transactions = cursor.fetchall()
 
+    # 🔧 Normalize for Flutter display
+    for txn in transactions:
+        txn["from"] = txn.get("from_family")
+        txn["to"] = txn.get("to_family")
+
     # 🩵 NEW: fallback to most recent archived transactions if none active
     if not transactions:
         cursor.execute("""
