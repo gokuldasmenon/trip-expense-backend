@@ -514,29 +514,39 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
     """
     Logs carry-forward balances for each family from the previous to the new stay settlement.
-    Creates one record per family so future settlements can reference these balances.
-
-    Args:
-        trip_id: The trip identifier.
-        previous_settlement_id: ID of the previous stay settlement (may be None for first).
-        new_settlement_id: ID of the newly created stay settlement.
-        families: List of family dicts from the settlement calculation.
-
-    Behavior:
-        - Inserts one row per family into stay_carry_forward_log.
-        - Includes delta change for tracking how much the balance shifted.
-        - Skips gracefully if previous_settlement_id is None (first ever settlement).
+    If this is the first settlement (no previous_settlement_id), creates a baseline log entry
+    with zero delta so that the Carry Forward Log page always has a record.
     """
-    if not previous_settlement_id:
-        print(f"ℹ️ [DEBUG] Trip {trip_id}: No previous settlement found — skipping carry-forward log.")
-        return
-
     try:
         conn = get_connection()
         cursor = conn.cursor()
 
-        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} "
-              f"(prev={previous_settlement_id}, new={new_settlement_id})")
+        # ✅ Handle the very first settlement (no previous one)
+        if not previous_settlement_id:
+            print(f"🧾 [DEBUG] Trip {trip_id}: Creating baseline carry-forward log (first settlement, ID={new_settlement_id})")
+            inserted_count = 0
+            for fam in families:
+                family_id = fam["family_id"]
+                prev_balance = 0.0
+                new_balance = float(fam.get("balance", 0.0))
+                delta = new_balance  # Since prev_balance = 0
+
+                cursor.execute("""
+                    INSERT INTO stay_carry_forward_log (
+                        trip_id, previous_settlement_id, new_settlement_id,
+                        family_id, previous_balance, new_balance, delta, created_at
+                    )
+                    VALUES (%s, NULL, %s, %s, %s, %s, %s, NOW());
+                """, (trip_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
+                inserted_count += 1
+
+            conn.commit()
+            conn.close()
+            print(f"✅ [DEBUG] Baseline carry-forward log created — {inserted_count} rows inserted.")
+            return
+
+        # ✅ For normal carry-forward (has previous settlement)
+        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
 
         inserted_count = 0
         for fam in families:
@@ -551,19 +561,18 @@ def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_sett
                     family_id, previous_balance, new_balance, delta, created_at
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, NOW());
-            """, (trip_id, previous_settlement_id, new_settlement_id,
-                  family_id, prev_balance, new_balance, delta))
+            """, (trip_id, previous_settlement_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
             inserted_count += 1
 
         conn.commit()
         conn.close()
-        print(f"✅ [DEBUG] Carry-forward log recorded successfully — "
-              f"{inserted_count} rows inserted into stay_carry_forward_log.")
+        print(f"✅ [DEBUG] Carry-forward log recorded successfully — {inserted_count} rows inserted into stay_carry_forward_log.")
 
     except Exception as e:
         import traceback
         print(f"⚠️ [DEBUG] Carry-forward log failed for trip {trip_id}: {e}")
         traceback.print_exc()
+
 
 def record_stay_settlement(trip_id: int, result: dict):
     """
@@ -590,10 +599,18 @@ def record_stay_settlement(trip_id: int, result: dict):
     print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={existing[0] if existing else None}")
 
     # ✅ Only skip if BOTH exist and are identical
-    if existing and prev_id and prev_id == existing[0]:
-        print(f"⚠️ Duplicate prevention triggered: trip {trip_id}, prev_id={prev_id}, last_settlement_id={existing[0]}")
-        conn.close()
-        return existing[0]
+    # ✅ Only skip if the *same settlement* was just saved (within a few seconds)
+    if existing and len(existing) > 1 and existing[1] is not None:
+        from datetime import datetime, timezone
+        created_time = existing[1]
+        now = datetime.now(timezone.utc)
+        seconds_since = (now - created_time).total_seconds()
+        if seconds_since < 5:
+            print(f"⚠️ Skipping immediate re-finalization for trip {trip_id} "
+                f"(last settlement {seconds_since:.1f}s ago)")
+            conn.close()
+            return existing[0]
+
 
     # 1️⃣ Insert into stay_settlements summary table
     cursor.execute("""
