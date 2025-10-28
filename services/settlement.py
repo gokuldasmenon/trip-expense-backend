@@ -357,10 +357,14 @@ def calculate_stay_settlement(trip_id: int):
         f_to = txn["to_family_id"]
         amt = float(txn["amount"])
         # payer owes less (moves toward zero)
-        adjustments[f_from] = adjustments.get(f_from, 0.0) + amt
+        adjustments[f_from] = adjustments.get(f_from, 0.0) - amt
         # receiver is owed less (moves toward zero)
-        adjustments[f_to] = adjustments.get(f_to, 0.0) - amt
-
+        adjustments[f_to] = adjustments.get(f_to, 0.0) + amt
+    print("🔧 Adjustments applied (payer pays = balance increases):")
+    for f in results:
+        fid = f["family_id"]
+        adj = adjustments.get(fid, 0.0)
+        print(f"▶ {f['family_name']}: Net={f['balance']} + Adj({adj:+.2f}) = Adjusted={f['balance'] + adj:.2f}")
     # 7) adjusted balances
     for f in results:
         fid = f["family_id"]
