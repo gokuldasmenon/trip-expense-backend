@@ -318,30 +318,6 @@ def get_trips_for_user_endpoint(user_id: int):
 
 
 
-
-
-@app.get("/debug_members")
-def debug_trip_members():
-    """Show all trip-member relations for debugging."""
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    cursor.execute("""
-        SELECT tm.id, tm.trip_id, t.name AS trip_name,
-               tm.user_id, u.name AS user_name,
-               tm.role, tm.joined_at
-        FROM trip_members tm
-        LEFT JOIN trips t ON tm.trip_id = t.id
-        LEFT JOIN users u ON tm.user_id = u.id
-        ORDER BY tm.id DESC
-    """)
-    members = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    return {"count": len(members), "memberships": members}
-
-
 @app.get("/trip/{trip_id}")
 def get_trip(trip_id: int):
     """Fetch single trip with owner info."""
@@ -752,7 +728,8 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
 @app.get("/stay_carry_forward_logs/{trip_id}")
 def list_stay_carry_forward_logs(trip_id: int):
     """
-    Returns all carry-forward log entries for a trip, including family names.
+    Returns all carry-forward log entries for a trip,
+    enriched with family names and stay period (start → end).
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -768,18 +745,21 @@ def list_stay_carry_forward_logs(trip_id: int):
             log.previous_balance,
             log.new_balance,
             log.delta,
-            log.created_at
+            log.created_at,
+            ss.period_start,
+            ss.period_end
         FROM stay_carry_forward_log log
         LEFT JOIN family_details f ON log.family_id = f.id
+        LEFT JOIN stay_settlements ss ON log.new_settlement_id = ss.id
         WHERE log.trip_id = %s
         ORDER BY log.created_at DESC;
     """, (trip_id,))
 
     logs = cursor.fetchall()
-
     conn.close()
 
     return {"trip_id": trip_id, "logs": logs}
+
 
 @app.delete("/stay_carry_forward_log/{log_id}")
 def delete_stay_carry_forward_log(log_id: int):
