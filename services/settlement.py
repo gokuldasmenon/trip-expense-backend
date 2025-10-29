@@ -87,9 +87,9 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
             "family_id": fid,
             "family_name": family_names[fid],
             "members_count": family_members[fid],
-            "total_spent": round(paid, 2),
-            "raw_balance": round(net, 2),
-            "balance": round(net, 2)
+            "total_spent": round(paid),
+            "raw_balance": round(net),
+            "balance": round(net)
         })
 
     # --- Step 6: Transactions ---
@@ -108,7 +108,7 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
             transactions.append({
                 "from": d["family_name"],
                 "to": c["family_name"],
-                "amount": round(payment, 2)
+                "amount": round(payment)
             })
             owed -= payment
             c["balance"] -= payment
@@ -120,9 +120,9 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
     conn.close()
 
     return {
-        "total_expense": round(total_expense, 2),
+        "total_expense": round(total_expense),
         "total_members": total_members,
-        "per_head_cost": round(per_head_cost, 2),
+        "per_head_cost": round(per_head_cost),
         "families": family_results,
         "transactions": transactions if transactions else "All accounts settled"
     }
@@ -247,7 +247,7 @@ def calculate_stay_settlement(trip_id: int):
         FROM family_details WHERE trip_id = %s;
     """, (trip_id,))
     total_members = int(cursor.fetchone()["total_members"] or 0) or 1
-    per_head_cost = round(total_expense / total_members, 2)
+    per_head_cost = round(total_expense / total_members)
 
     # 2) previous settlement (for carry-forward)
     cursor.execute("""
@@ -289,16 +289,16 @@ def calculate_stay_settlement(trip_id: int):
         """, (trip_id, fid))
         spent = float(cursor.fetchone()["spent"] or 0.0)
 
-        due = round(per_head_cost * int(f["members_count"]), 2)  # member-weighted
+        due = round(per_head_cost * int(f["members_count"]))  # member-weighted
         prev_bal = float(previous_balance_map.get(fid, 0.0))
 
         # ✅ Correct logic:
         # The previous balance is already adjusted (settled value from last period)
         # So we add only the *new delta* (spent - due) on top of that carry-forward.
         if prev_settlement_id:
-            net = round(spent - due, 2)
+            net = round(spent - due)
         else:
-            net = round(prev_bal + (spent - due), 2)
+            net = round(prev_bal + (spent - due))
 
         results.append({
             "family_id": fid,
@@ -375,7 +375,7 @@ def calculate_stay_settlement(trip_id: int):
     for f in results:
         fid = f["family_id"]
         adj = float(adjustments.get(fid, 0.0))
-        f["adjusted_balance"] = round(f["balance"] + adj, 2)
+        f["adjusted_balance"] = round(f["balance"] + adj)
 
     # 8) compute suggested settlements from adjusted balances (NOT from records table)
     #    debtors negative, creditors positive
@@ -404,10 +404,10 @@ def calculate_stay_settlement(trip_id: int):
         suggested.append({
             "from": debtors[di]["family_name"],
             "to": creditors[ci]["family_name"],
-            "amount": round(pay_amt, 2)
+            "amount": round(pay_amt)
         })
-        creditors[ci]["bal"] = round(creditors[ci]["bal"] - pay_amt, 2)
-        debtors[di]["bal"] = round(debtors[di]["bal"] + pay_amt, 2)
+        creditors[ci]["bal"] = round(creditors[ci]["bal"] - pay_amt)
+        debtors[di]["bal"] = round(debtors[di]["bal"] + pay_amt)
         if abs(creditors[ci]["bal"]) < 0.01:
             ci += 1
         if abs(debtors[di]["bal"]) < 0.01:
@@ -431,7 +431,7 @@ def calculate_stay_settlement(trip_id: int):
     return {
         "period_start": period_start,
         "period_end": period_end,
-        "total_expense": round(total_expense, 2),
+        "total_expense": round(total_expense),
         "total_members": total_members,
         "per_head_cost": per_head_cost,
         "families": results,
@@ -525,7 +525,7 @@ def record_stay_settlement(trip_id: int, result: dict):
             fam["members_count"],
             fam["total_spent"],
             fam["due_amount"],
-            round(balance_value, 2)
+            round(balance_value)
         ))
     conn.commit()
     print("✅ Family-level settlement details saved.")
@@ -580,7 +580,7 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
     if record:
         settlement_id = record_stay_settlement(trip_id, result)
         result["recorded_id"] = settlement_id
-    result["carry_forward_total"] = round(sum(f["previous_balance"] for f in result["families"]), 2)
+    result["carry_forward_total"] = round(sum(f["previous_balance"] for f in result["families"]))
     return result
 def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
     """
@@ -624,7 +624,7 @@ def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_sett
             family_id = fam["family_id"]
             prev_balance = float(fam.get("previous_balance", 0.0))
             new_balance = float(fam.get("balance", 0.0))
-            delta = round(new_balance - prev_balance, 2)
+            delta = round(new_balance - prev_balance)
 
             cursor.execute("""
                 INSERT INTO stay_carry_forward_log (

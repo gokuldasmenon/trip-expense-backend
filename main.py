@@ -605,14 +605,7 @@ def get_archived_transactions(trip_id: int):
     rows = cursor.fetchall()
     conn.close()
     return {"trip_id": trip_id, "archived_transactions": rows}
-@app.delete("/settlement_transaction/{id}")
-def delete_settlement_transaction(id: int):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM settlement_transactions WHERE id = %s;", (id,))
-    conn.commit()
-    conn.close()
-    return {"message": f"Transaction {id} deleted successfully"}
+
 # ==========================================
 # 🏠 RECORD A STAY SETTLEMENT
 # ==========================================
@@ -637,6 +630,70 @@ def record_stay_settlement_endpoint(trip_id: int):
         print("❌ Error while recording stay settlement:", e)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to record stay settlement: {e}")
+# ==============================
+# Settlement Transaction Edit/Delete
+# ==============================
+
+@app.put("/update_settlement_transaction/{txn_id}")
+def update_settlement_transaction(txn_id: int, payload: dict):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Check if transaction belongs to an unfinalized trip
+    cursor.execute("""
+        SELECT trip_id FROM settlement_transactions WHERE id = %s;
+    """, (txn_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Transaction not found."}
+
+    trip_id = row[0]
+    cursor.execute("SELECT COUNT(*) FROM stay_settlements WHERE trip_id = %s;", (trip_id,))
+    finalized = cursor.fetchone()[0] > 0
+    if finalized:
+        conn.close()
+        return {"error": "Settlement already finalized — editing not allowed."}
+
+    amount = int(round(float(payload.get("amount", 0))))
+    remarks = payload.get("remarks", "")
+    cursor.execute("""
+        UPDATE settlement_transactions
+        SET amount = %s, remarks = %s
+        WHERE id = %s;
+    """, (amount, remarks, txn_id))
+    conn.commit()
+    conn.close()
+
+    return {"message": "Transaction updated successfully."}
+
+
+@app.delete("/delete_settlement_transaction/{txn_id}")
+def delete_settlement_transaction(txn_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Verify trip not finalized
+    cursor.execute("""
+        SELECT trip_id FROM settlement_transactions WHERE id = %s;
+    """, (txn_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Transaction not found."}
+
+    trip_id = row[0]
+    cursor.execute("SELECT COUNT(*) FROM stay_settlements WHERE trip_id = %s;", (trip_id,))
+    finalized = cursor.fetchone()[0] > 0
+    if finalized:
+        conn.close()
+        return {"error": "Settlement already finalized — deletion not allowed."}
+
+    cursor.execute("DELETE FROM settlement_transactions WHERE id = %s;", (txn_id,))
+    conn.commit()
+    conn.close()
+
+    return {"message": "Transaction deleted successfully."}
 
 # ==========================================
 # 📜 VIEW CARRY-FORWARD HISTORY FOR A TRIP
