@@ -482,19 +482,9 @@ def record_stay_settlement(trip_id: int, result: dict):
 
     # ✅ Only skip if the *same settlement* was saved seconds ago (not based on prev_id)
     if existing and existing[1]:
-        created_time = existing[1]
-
-        # 🩵 Normalize both datetimes safely
-        if created_time.tzinfo is not None:
-            # If DB time is timezone-aware, convert both to UTC
-            created_time = created_time.astimezone(timezone.utc)
-            now = datetime.now(timezone.utc)
-        else:
-            # If DB time is naive, strip tzinfo from now for consistent comparison
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-
+        created_time = existing[1].replace(tzinfo=None)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         seconds_since = (now - created_time).total_seconds()
-
         if seconds_since < 5:
             print(f"⚠️ Skipping immediate re-finalization for trip {trip_id} "
                 f"(last settlement {seconds_since:.1f}s ago)")
