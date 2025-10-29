@@ -351,7 +351,7 @@ def calculate_stay_settlement(trip_id: int):
         txn["to"] = txn.get("to_family")
 
     # 6) build adjustments from active transactions only
-    adjustments = {}
+    adjustments = {f["family_id"]: 0.0 for f in results}
     for txn in active_txns:
         f_from = txn["from_family_id"]
         f_to = txn["to_family_id"]
