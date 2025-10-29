@@ -292,8 +292,11 @@ def calculate_stay_settlement(trip_id: int):
         due = round(per_head_cost * int(f["members_count"]), 2)  # member-weighted
         prev_bal = float(previous_balance_map.get(fid, 0.0))
 
-        # ✅ Net includes carry-forward
-        net = round(prev_bal + (spent - due), 2)
+        # ✅ Correct logic:
+        # The previous balance is already adjusted (settled value from last period)
+        # So we add only the *new delta* (spent - due) on top of that carry-forward.
+        raw_balance = round(spent - due, 2)
+        net = round(prev_bal + raw_balance, 2)
 
         results.append({
             "family_id": fid,
