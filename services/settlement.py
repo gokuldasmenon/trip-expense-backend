@@ -271,7 +271,7 @@ def calculate_stay_settlement(trip_id: int):
         for row in cursor.fetchall():
             previous_balance_map[row["family_id"]] = float(row["balance"])
 
-    # 4) families + raw spend/due/net
+        # 4️⃣ Compute each family’s Net (includes carry-forward properly)
     cursor.execute("""
         SELECT id AS family_id, family_name, members_count
         FROM family_details WHERE trip_id = %s
@@ -282,6 +282,8 @@ def calculate_stay_settlement(trip_id: int):
     results = []
     for f in families:
         fid = f["family_id"]
+
+        # Total spent by this family during this period
         cursor.execute("""
             SELECT COALESCE(SUM(amount), 0) AS spent
             FROM expenses
@@ -289,26 +291,28 @@ def calculate_stay_settlement(trip_id: int):
         """, (trip_id, fid))
         spent = float(cursor.fetchone()["spent"] or 0.0)
 
-        due = round(per_head_cost * int(f["members_count"]))  # member-weighted
+        # Family's fair share of total expense based on member count
+        due = round(per_head_cost * int(f["members_count"]), 2)
+
+        # Load previous carry-forward balance (from adjusted balances of last settlement)
         prev_bal = float(previous_balance_map.get(fid, 0.0))
 
         # ✅ Correct logic:
         # The previous balance is already adjusted (settled value from last period)
         # So we add only the *new delta* (spent - due) on top of that carry-forward.
-        if prev_settlement_id:
-            net = round(spent - due)
-        else:
-            net = round(prev_bal + (spent - due))
+        raw_balance = round(spent - due, 2)
+        net = round(prev_bal + raw_balance, 2)
 
         results.append({
             "family_id": fid,
             "family_name": f["family_name"],
             "members_count": int(f["members_count"]),
             "total_spent": float(spent),
-            "due_amount": float(due),          # ← show this in UI “Share (₹)”
+            "due_amount": float(due),
             "previous_balance": float(prev_bal),
-            "balance": float(net),             # ← Net (₹)
+            "balance": float(net),  # <-- Net includes correct carry-forward
         })
+
     print(f"🧮 [DEBUG] Computed family {f['family_name']}: spent={spent}, due={due}, prev={prev_bal}, net={net}")
 
     # 5) active transactions (with names) — used for ADJUSTED only, not for suggested
@@ -489,7 +493,7 @@ def record_stay_settlement(trip_id: int, result: dict):
             print(f"⚠️ Skipping immediate re-finalization for trip {trip_id} "
                 f"(last settlement {seconds_since:.1f}s ago)")
             conn.close()
-            return last_id
+        return last_id
 
     # 1️⃣ Insert into stay_settlements summary table
     cursor.execute("""
