@@ -511,7 +511,8 @@ def record_stay_settlement(trip_id: int, result: dict):
 
     # 2️⃣ Insert family-level details
     for fam in result["families"]:
-        balance_value = fam.get("adjusted_balance", fam.get("balance", 0))
+        # ✅ Store *net* balance (not adjusted) to carry forward real financial position
+        balance_value = fam.get("balance", 0)
         cursor.execute("""
             INSERT INTO stay_settlement_details (
                 settlement_id, family_id, family_name, members_count,
