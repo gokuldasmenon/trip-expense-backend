@@ -295,8 +295,10 @@ def calculate_stay_settlement(trip_id: int):
         # ✅ Correct logic:
         # The previous balance is already adjusted (settled value from last period)
         # So we add only the *new delta* (spent - due) on top of that carry-forward.
-        raw_balance = round(spent - due, 2)
-        net = round(prev_bal + raw_balance, 2)
+        if prev_settlement_id:
+            net = round(spent - due, 2)
+        else:
+            net = round(prev_bal + (spent - due), 2)
 
         results.append({
             "family_id": fid,
@@ -307,6 +309,7 @@ def calculate_stay_settlement(trip_id: int):
             "previous_balance": float(prev_bal),
             "balance": float(net),             # ← Net (₹)
         })
+    print(f"🧮 [DEBUG] Computed family {f['family_name']}: spent={spent}, due={due}, prev={prev_bal}, net={net}")
 
     # 5) active transactions (with names) — used for ADJUSTED only, not for suggested
     cursor.execute("""
