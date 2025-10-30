@@ -167,6 +167,31 @@ def get_last_stay_settlement(trip_id: int):
     cursor.close()
     conn.close()
     return result
+def _build_expense_time_filter(cursor, prev_end_date, prev_created_at):
+    """
+    Returns (clause_sql, params_tuple) to append in WHERE for expenses.
+    Prefers expenses.created_at > prev_created_at (exact), else falls back to date >= prev_end_date.
+    If no previous settlement, returns ("", ()).
+    """
+    if not prev_end_date and not prev_created_at:
+        return ("", ())
+
+    # Check if expenses.created_at exists (metadata is cheap & cached by PG)
+    cursor.execute("""
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'expenses' AND column_name = 'created_at'
+        LIMIT 1;
+    """)
+    has_created_at = cursor.fetchone() is not None
+
+    if has_created_at and prev_created_at:
+        # Best: strict “after the instant of finalize”
+        return (" AND e.created_at > %s ", (prev_created_at,))
+    else:
+        # Fallback: include same-day entries
+        # NOTE: using to_date to avoid text/date operator errors.
+        return (" AND to_date(e.date, 'YYYY-MM-DD') >= %s ", (prev_end_date or date.today(),))
 
 
 # =============================================
@@ -201,6 +226,9 @@ def calculate_stay_settlement(trip_id: int):
     prev = cursor.fetchone()
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
+    prev_created_at = prev["created_at"] if prev else None
+    time_where_sql, time_where_params = _build_expense_time_filter(cursor, prev_end_date, prev_created_at)
+
 
     # Build date filter for the current period
     expenses_date_clause = ""
@@ -214,9 +242,9 @@ def calculate_stay_settlement(trip_id: int):
     cursor.execute(
         f"""SELECT COALESCE(SUM(e.amount), 0) AS total_expense
             FROM expenses e
-            WHERE e.trip_id = %s {expenses_date_clause};
+            WHERE e.trip_id = %s {time_where_sql};
         """,
-        tuple(date_params),
+        (trip_id, *time_where_params) if time_where_params else (trip_id,)
     )
     total_expense = float(cursor.fetchone()["total_expense"] or 0.0)
 
@@ -263,24 +291,15 @@ def calculate_stay_settlement(trip_id: int):
     for f in families:
         fid = f["family_id"]
         # period-spent for this family
-        if prev_end_date:
-            cursor.execute(
-                f"""
-                SELECT COALESCE(SUM(e.amount), 0) AS spent
-                FROM expenses e
-                WHERE e.trip_id = %s AND e.payer_family_id = %s {expenses_date_clause};
-                """,
-                (trip_id, fid, prev_end_date),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT COALESCE(SUM(e.amount), 0) AS spent
-                FROM expenses e
-                WHERE e.trip_id = %s AND e.payer_family_id = %s;
-                """,
-                (trip_id, fid),
-            )
+        cursor.execute(
+            f"""
+            SELECT COALESCE(SUM(e.amount), 0) AS spent
+            FROM expenses e
+            WHERE e.trip_id = %s AND e.payer_family_id = %s {time_where_sql};
+            """,
+            (trip_id, fid, *time_where_params) if time_where_params else (trip_id, fid)
+        )
+  
 
         spent = float(cursor.fetchone()["spent"] or 0.0)
         due = per_head_cost * int(f["members_count"])
