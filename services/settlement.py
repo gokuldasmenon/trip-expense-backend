@@ -409,23 +409,41 @@ def calculate_stay_settlement(trip_id: int):
 
     suggested = []
     ci = di = 0
+
+    # Loop through creditors and debtors until both sides are cleared
     while ci < len(creditors) and di < len(debtors):
-        pay_amt = min(creditors[ci]["bal"], -debtors[di]["bal"])
-        if pay_amt <= 0:
-            break
-        suggested.append(
-            {
+        c_bal = round(creditors[ci]["bal"], 2)
+        d_bal = round(debtors[di]["bal"], 2)
+
+        # Skip if either side is effectively settled (within 0.01 tolerance)
+        if c_bal < 0.01:
+            ci += 1
+            continue
+        if d_bal > -0.01:
+            di += 1
+            continue
+
+        # Compute the transferable amount (keep full precision)
+        pay_amt = min(c_bal, -d_bal)
+
+        # 🔧 FIX: ignore tiny or rounded-down zeros
+        if pay_amt > 0.01:
+            suggested.append({
                 "from": debtors[di]["family_name"],
                 "to": creditors[ci]["family_name"],
-                "amount": round(pay_amt),
-            }
-        )
+                "amount": round(pay_amt)  # round only for display
+            })
+
+        # Update balances
         creditors[ci]["bal"] -= pay_amt
         debtors[di]["bal"] += pay_amt
+
+        # Move pointers if anyone is fully settled (within small epsilon)
         if abs(creditors[ci]["bal"]) < 0.01:
             ci += 1
         if abs(debtors[di]["bal"]) < 0.01:
             di += 1
+
 
     # 8) Period & finalize output (round for UI only)
     period_start = (prev_end_date + timedelta(days=1)) if prev_end_date else datetime.utcnow().date()
