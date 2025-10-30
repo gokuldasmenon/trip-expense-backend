@@ -207,7 +207,7 @@ def calculate_stay_settlement(trip_id: int):
     date_params = [trip_id]
     if prev_end_date:
         # only expenses strictly AFTER the previous period_end
-        expenses_date_clause = "AND e.date > %s"
+        expenses_date_clause = "AND e.date::date > %s"
         date_params.append(prev_end_date)
 
     # 2) total_expense (PERIOD ONLY), total_members, per-head cost (float)
