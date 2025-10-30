@@ -437,7 +437,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     conn = get_connection()
     cursor = conn.cursor()
 
-    print(f"🧾 Finalizing stay settlement for trip {trip_id}...")
+    print(f"🧾 Finalizing  n for trip {trip_id}...")
 
     # 🔍 0️⃣ Check for recent duplicate (avoid accidental double-click)
     cursor.execute("""
@@ -452,7 +452,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     last_id = existing[0] if existing else None
     print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={last_id}")
 
-    # ✅ Only skip if the *same settlement* was saved seconds ago (not based on prev_id)
+    # ✅ Only skip if the *same settlement* was saved seconds ago
     if existing and existing[1]:
         created_time = existing[1].replace(tzinfo=None)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -461,7 +461,8 @@ def record_stay_settlement(trip_id: int, result: dict):
             print(f"⚠️ Skipping immediate re-finalization for trip {trip_id} "
                 f"(last settlement {seconds_since:.1f}s ago)")
             conn.close()
-        return last_id
+            return last_id   # <-- ✅ Now it runs only inside the if condition
+
 
     # 1️⃣ Insert into stay_settlements summary table
     cursor.execute("""
