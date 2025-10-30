@@ -26,10 +26,6 @@ def determine_period(period_type: str):
 
     return (start, end)
 
-
-# =========================
-# Fetch last STAY settlement
-# =========================
 def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -151,6 +147,9 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
         "families": family_results,
         "transactions": transactions if transactions else "All accounts settled"
     }
+# =========================
+# Fetch last STAY settlement
+# =========================
 def get_last_stay_settlement(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -544,6 +543,54 @@ def record_stay_settlement(trip_id: int, result: dict):
     finally:
         conn.close()
 
+def record_trip_settlement(trip_id: int, result: dict) -> int:
+    """
+    Records a trip settlement into trip_settlements and trip_settlement_details.
+    Returns the new settlement_id.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Insert into trip_settlements
+    cursor.execute("""
+        INSERT INTO trip_settlements (
+            trip_id, mode, period_start, period_end, total_expense, per_head_cost
+        )
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+    """, (
+        trip_id,
+        result.get("mode", "TRIP"),
+        result.get("period_start", datetime.utcnow().date()),
+        result.get("period_end", datetime.utcnow().date()),
+        result.get("total_expense", 0.0),
+        result.get("per_head_cost", 0.0)
+    ))
+    settlement_id = cursor.fetchone()["id"]
+
+    # Insert family-level details
+    for fam in result.get("families", []):
+        cursor.execute("""
+            INSERT INTO trip_settlement_details (
+                settlement_id, family_id, family_name, members_count, total_spent, due_amount, balance
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            settlement_id,
+            fam.get("family_id"),
+            fam.get("family_name"),
+            fam.get("members_count"),
+            fam.get("total_spent"),
+            fam.get("raw_balance", 0.0),  # raw_balance acts as due_amount here
+            fam.get("balance", 0.0)
+        ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    print(f"✅ Trip settlement {settlement_id} recorded for trip {trip_id}")
+    return settlement_id
 
 # ==========================================
 # Carry-forward Log (idempotent, DB-driven)
