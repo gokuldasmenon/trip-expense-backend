@@ -213,20 +213,18 @@ def calculate_stay_settlement(trip_id: int):
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     # 1) Previous settlement (for carry-forward & period boundary)
-    cursor.execute(
-        """
-        SELECT id, period_end
+    cursor.execute("""
+        SELECT id, period_end, created_at
         FROM stay_settlements
         WHERE trip_id = %s
         ORDER BY id DESC
         LIMIT 1;
-        """,
-        (trip_id,),
-    )
+    """, (trip_id,))
     prev = cursor.fetchone()
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
-    prev_created_at = prev["created_at"] if prev else None
+    prev_created_at = prev["created_at"] if prev and "created_at" in prev else None
+
     time_where_sql, time_where_params = _build_expense_time_filter(cursor, prev_end_date, prev_created_at)
 
 
