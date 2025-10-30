@@ -249,7 +249,8 @@ def calculate_stay_settlement(trip_id: int):
         SELECT id, period_end
         FROM stay_settlements
         WHERE trip_id = %s
-        ORDER BY id DESC LIMIT 1;
+        ORDER BY id DESC
+        LIMIT 1;
     """, (trip_id,))
     prev = cursor.fetchone()
     prev_settlement_id = prev["id"] if prev else None
@@ -259,9 +260,10 @@ def calculate_stay_settlement(trip_id: int):
     # 3️⃣ Carry-forward map — use adjusted_balance (finalized)
     previous_balance_map = {}
     if prev_settlement_id:
+        conn.commit()  # ensure visibility of any recent settlement
         cursor.execute("""
-            SELECT family_id, 
-                COALESCE(adjusted_balance, balance) AS carry_forward_balance
+            SELECT family_id,
+                   COALESCE(adjusted_balance, balance, 0.0) AS carry_forward_balance
             FROM stay_settlement_details
             WHERE settlement_id = %s;
         """, (prev_settlement_id,))
