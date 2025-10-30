@@ -226,24 +226,25 @@ import psycopg2.extras
 def calculate_stay_settlement(trip_id: int):
     """
     STAY mode settlement:
-    - per_head_cost by member count
+    - Per-head cost based on total members
     - Net = previous_carry_forward + (spent - due)
-    - Adjusted = Net + (sum of active transactions impact)
-    - Suggested settlements are computed from Adjusted balances
-    - All values rounded to nearest rupee with total balance normalization
+    - Adjusted = Net + (sum of active transaction impacts)
+    - Suggested settlements are derived from adjusted balances
+    - Internal values use floats for accuracy; rounding only at output
     """
+
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 1️⃣ Total expense, members, per-head cost
+    # 1️⃣ Total expense, total members, per-head cost
     cursor.execute("SELECT COALESCE(SUM(amount), 0) AS total_expense FROM expenses WHERE trip_id = %s;", (trip_id,))
-    total_expense = float(cursor.fetchone()["total_expense"] or 0)
+    total_expense = float(cursor.fetchone()["total_expense"] or 0.0)
 
     cursor.execute("SELECT COALESCE(SUM(members_count), 0) AS total_members FROM family_details WHERE trip_id = %s;", (trip_id,))
     total_members = int(cursor.fetchone()["total_members"] or 0) or 1
-    per_head_cost = round(total_expense / total_members)
+    per_head_cost = total_expense / total_members
 
-    # 2️⃣ Last settlement (for carry-forward)
+    # 2️⃣ Previous settlement (for carry-forward)
     cursor.execute("""
         SELECT id, period_end
         FROM stay_settlements
@@ -254,7 +255,7 @@ def calculate_stay_settlement(trip_id: int):
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
 
-    # 3️⃣ Carry-forward map
+    # 3️⃣ Carry-forward map (previous balances)
     previous_balance_map = {}
     if prev_settlement_id:
         cursor.execute("""
@@ -265,10 +266,11 @@ def calculate_stay_settlement(trip_id: int):
         for row in cursor.fetchall():
             previous_balance_map[row["family_id"]] = float(row["balance"])
 
-    # 4️⃣ Compute each family’s net (includes carry-forward)
+    # 4️⃣ Compute family balances
     cursor.execute("""
         SELECT id AS family_id, family_name, members_count
-        FROM family_details WHERE trip_id = %s
+        FROM family_details
+        WHERE trip_id = %s
         ORDER BY id;
     """, (trip_id,))
     families = cursor.fetchall()
@@ -283,10 +285,10 @@ def calculate_stay_settlement(trip_id: int):
             WHERE trip_id = %s AND payer_family_id = %s;
         """, (trip_id, fid))
         spent = float(cursor.fetchone()["spent"] or 0.0)
-        due = round(per_head_cost * int(f["members_count"]), 2)
-        prev_bal = float(previous_balance_map.get(fid, 0.0))
-        raw_balance = round(spent - due, 2)
-        net = round(prev_bal + raw_balance, 2)
+        due = per_head_cost * int(f["members_count"])
+        prev_bal = previous_balance_map.get(fid, 0.0)
+
+        net = prev_bal + (spent - due)
 
         results.append({
             "family_id": fid,
@@ -297,24 +299,9 @@ def calculate_stay_settlement(trip_id: int):
             "previous_balance": prev_bal,
             "balance": net,
         })
-        print(f"🧮 [DEBUG] Computed family {f['family_name']}: spent={spent}, due={due}, prev={prev_bal}, net={net}")
+        print(f"🧮 [DEBUG] Family {f['family_name']}: spent={spent:.2f}, due={due:.2f}, prev={prev_bal:.2f}, net={net:.2f}")
 
-    # ✅ Step: Correct rounding mismatches so total net sums to 0
-    total_net = sum(f["balance"] for f in results)
-    if round(total_net) != 0:
-        diff = -round(total_net)
-        target = max(results, key=lambda f: abs(f["balance"]))
-        target["balance"] = round(target["balance"] + diff)
-        print(f"🔧 Applied rounding correction of {diff} to {target['family_name']} (total_net was {total_net})")
-
-    # ✅ Convert all to integers
-    for f in results:
-        f["total_spent"] = int(round(f["total_spent"]))
-        f["due_amount"] = int(round(f["due_amount"]))
-        f["previous_balance"] = int(round(f["previous_balance"]))
-        f["balance"] = int(round(f["balance"]))
-
-    # 5️⃣ Load active + archived transactions
+    # 5️⃣ Load transactions (active and archived)
     cursor.execute("""
         SELECT t.from_family_id, f1.family_name AS from_family,
                t.to_family_id, f2.family_name AS to_family,
@@ -341,84 +328,95 @@ def calculate_stay_settlement(trip_id: int):
           AND sta.settlement_id = (SELECT MAX(id) FROM stay_settlements WHERE trip_id = %s)
         ORDER BY sta.id;
     """, (trip_id, trip_id))
-    archived_fallback = cursor.fetchall()
-    for txn in archived_fallback:
+    archived_txns = cursor.fetchall()
+    for txn in archived_txns:
         txn["from"] = txn.get("from_family")
         txn["to"] = txn.get("to_family")
 
-    # 6️⃣ Build adjustments (active first, fallback to archived)
-    txns_to_use = active_txns if active_txns else archived_fallback
-    adjustments = {f["family_id"]: 0 for f in results}
+    # 6️⃣ Apply adjustments (active transactions)
+    txns_to_use = active_txns if active_txns else archived_txns
+    adjustments = {f["family_id"]: 0.0 for f in results}
+
     for txn in txns_to_use:
-        f_from = txn["from_family_id"]
-        f_to = txn["to_family_id"]
-        amt = int(round(float(txn["amount"])))
-        adjustments[f_from] = adjustments.get(f_from, 0) + amt
-        adjustments[f_to] = adjustments.get(f_to, 0) - amt
+        f_from, f_to = txn["from_family_id"], txn["to_family_id"]
+        amt = float(txn["amount"])
+        adjustments[f_from] = adjustments.get(f_from, 0.0) + amt
+        adjustments[f_to] = adjustments.get(f_to, 0.0) - amt
 
     print("🔧 Adjustments applied (payer pays = balance increases):")
     for f in results:
         fid = f["family_id"]
-        adj = adjustments.get(fid, 0)
+        adj = adjustments.get(fid, 0.0)
         adjusted = f["balance"] + adj
-        print(f"▶ {f['family_name']}: Net={f['balance']} + Adj({adj:+}) = Adjusted={adjusted}")
         f["adjusted_balance"] = adjusted
+        print(f"▶ {f['family_name']}: Net={f['balance']:.2f} + Adj({adj:+.2f}) = Adjusted={adjusted:.2f}")
 
-    # ✅ Step: Ensure total adjusted also sums to 0
+    # ✅ Normalize total adjusted to exactly 0.00 (final precision correction)
     total_adj = sum(f["adjusted_balance"] for f in results)
-    if round(total_adj) != 0:
-        diff2 = -round(total_adj)
-        target2 = max(results, key=lambda f: abs(f["adjusted_balance"]))
-        target2["adjusted_balance"] = round(target2["adjusted_balance"] + diff2)
-        print(f"🔧 Applied adjusted rounding correction of {diff2} to {target2['family_name']} (total_adj was {total_adj})")
+    if abs(total_adj) > 0.01:
+        correction = -total_adj
+        target = max(results, key=lambda x: abs(x["adjusted_balance"]))
+        target["adjusted_balance"] += correction
+        print(f"🔧 Final correction {correction:+.2f} applied to {target['family_name']} (ensured total=0.00)")
 
-    # 7️⃣ Suggested settlements (computed from adjusted balances)
+    # 7️⃣ Suggested settlements
     creditors = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]}
-                 for f in results if f["adjusted_balance"] > 0]
+                 for f in results if f["adjusted_balance"] > 0.01]
     debtors = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]}
-               for f in results if f["adjusted_balance"] < 0]
+               for f in results if f["adjusted_balance"] < -0.01]
+
     creditors.sort(key=lambda x: -x["bal"])
     debtors.sort(key=lambda x: x["bal"])
 
     suggested = []
     ci, di = 0, 0
-    while di < len(debtors) and ci < len(creditors):
+    while ci < len(creditors) and di < len(debtors):
         pay_amt = min(creditors[ci]["bal"], -debtors[di]["bal"])
         if pay_amt <= 0:
             break
         suggested.append({
             "from": debtors[di]["family_name"],
             "to": creditors[ci]["family_name"],
-            "amount": int(round(pay_amt))
+            "amount": round(pay_amt)
         })
         creditors[ci]["bal"] -= pay_amt
         debtors[di]["bal"] += pay_amt
-        if abs(creditors[ci]["bal"]) < 1:
+        if abs(creditors[ci]["bal"]) < 0.01:
             ci += 1
-        if abs(debtors[di]["bal"]) < 1:
+        if abs(debtors[di]["bal"]) < 0.01:
             di += 1
 
-    # 8️⃣ Period
+    # 8️⃣ Period and output formatting
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
     conn.close()
 
+    # ✅ Round only for output (UI safety)
+    for f in results:
+        f["total_spent"] = round(f["total_spent"])
+        f["due_amount"] = round(f["due_amount"])
+        f["previous_balance"] = round(f["previous_balance"])
+        f["balance"] = round(f["balance"])
+        f["adjusted_balance"] = round(f["adjusted_balance"])
+
     return {
         "period_start": period_start,
         "period_end": period_end,
-        "total_expense": int(round(total_expense)),
+        "total_expense": round(total_expense),
         "total_members": total_members,
-        "per_head_cost": int(round(per_head_cost)),
+        "per_head_cost": round(per_head_cost),
         "families": results,
         "carry_forward": bool(previous_balance_map),
         "carry_forward_breakdown": [
-            {"family_id": fid, "previous_balance": bal} for fid, bal in previous_balance_map.items()
+            {"family_id": fid, "previous_balance": bal}
+            for fid, bal in previous_balance_map.items()
         ],
         "previous_settlement_id": prev_settlement_id,
         "active_transactions": active_txns,
-        "archived_transactions": archived_fallback,
+        "archived_transactions": archived_txns,
         "suggested": suggested,
     }
+
 
 
 
