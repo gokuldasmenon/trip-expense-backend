@@ -263,14 +263,25 @@ def calculate_stay_settlement(trip_id: int):
     for f in families:
         fid = f["family_id"]
         # period-spent for this family
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(e.amount), 0) AS spent
-            FROM expenses e
-            WHERE e.trip_id = %s AND e.payer_family_id = %s {expenses_date_clause};
-            """,
-            tuple(date_params + [fid]) if prev_end_date else (trip_id, fid),
-        )
+        if prev_end_date:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(e.amount), 0) AS spent
+                FROM expenses e
+                WHERE e.trip_id = %s AND e.payer_family_id = %s {expenses_date_clause};
+                """,
+                (trip_id, fid, prev_end_date),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(e.amount), 0) AS spent
+                FROM expenses e
+                WHERE e.trip_id = %s AND e.payer_family_id = %s;
+                """,
+                (trip_id, fid),
+            )
+
         spent = float(cursor.fetchone()["spent"] or 0.0)
         due = per_head_cost * int(f["members_count"])
         prev_bal = previous_balance_map.get(fid, 0.0)
