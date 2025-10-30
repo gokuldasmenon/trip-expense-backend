@@ -256,15 +256,18 @@ def calculate_stay_settlement(trip_id: int):
     prev_end_date = prev["period_end"] if prev else None
 
     # 3️⃣ Carry-forward map (previous balances)
+    # 3️⃣ Carry-forward map — use adjusted_balance (finalized)
     previous_balance_map = {}
     if prev_settlement_id:
         cursor.execute("""
-            SELECT family_id, balance
+            SELECT family_id, 
+                COALESCE(adjusted_balance, balance) AS carry_forward_balance
             FROM stay_settlement_details
             WHERE settlement_id = %s;
         """, (prev_settlement_id,))
         for row in cursor.fetchall():
-            previous_balance_map[row["family_id"]] = float(row["balance"])
+            previous_balance_map[row["family_id"]] = float(row["carry_forward_balance"])
+
 
     # 4️⃣ Compute family balances
     cursor.execute("""
