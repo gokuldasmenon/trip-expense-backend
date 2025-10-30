@@ -340,15 +340,20 @@ def calculate_stay_settlement(trip_id: int):
 
     # 6️⃣ Apply adjustments (active transactions)
     adjustments = {f["family_id"]: 0.0 for f in results}
-    for txn in active_txns:
+    # Include all archived transactions linked to the last settlement
+    for txn in archived_txns + active_txns:
         f_from, f_to = txn["from_family_id"], txn["to_family_id"]
         amt = float(txn["amount"])
-        # 'from' pays → their balance moves UP toward zero; 'to' receives → moves DOWN
         adjustments[f_from] = adjustments.get(f_from, 0.0) + amt
-        adjustments[f_to]   = adjustments.get(f_to,   0.0) - amt
+        adjustments[f_to]   = adjustments.get(f_to, 0.0) - amt
 
+    print("🔧 Adjustments applied (including previous settlements):")
     for f in results:
-        f["adjusted_balance"] = f["balance"] + adjustments.get(f["family_id"], 0.0)
+        fid = f["family_id"]
+        adj = adjustments.get(fid, 0.0)
+        adjusted = f["balance"] + adj
+        f["adjusted_balance"] = adjusted
+        print(f"▶ {f['family_name']}: Net={f['balance']:.2f} + Adj({adj:+.2f}) = Adjusted={adjusted:.2f}")
 
     # ✅ Normalize total adjusted to exactly 0.00 (final precision correction)
     total_adj = sum(f["adjusted_balance"] for f in results)
