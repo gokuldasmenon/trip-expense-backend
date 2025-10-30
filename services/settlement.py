@@ -176,30 +176,18 @@ def calculate_stay_settlement(trip_id: int):
     """
     STAY mode settlement:
     - Per-head cost based on total members
-    - Net = previous_carry_forward + (spent - due)
+    - Net = previous_carry_forward + (period_spent - period_due)
     - Adjusted = Net + sum(active settlement transactions only)
     - Suggested settlements derived from ADJUSTED
     - Internals use floats; round only for output & suggestions
+    - IMPORTANT: Expenses are limited to the current period
+                 (i.e., only after the last finalized settlement).
     """
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 1) total_expense, total_members, per-head cost (float)
-    cursor.execute(
-        "SELECT COALESCE(SUM(amount), 0) AS total_expense FROM expenses WHERE trip_id = %s;",
-        (trip_id,),
-    )
-    total_expense = float(cursor.fetchone()["total_expense"] or 0.0)
-
-    cursor.execute(
-        "SELECT COALESCE(SUM(members_count), 0) AS total_members FROM family_details WHERE trip_id = %s;",
-        (trip_id,),
-    )
-    total_members = int(cursor.fetchone()["total_members"] or 0) or 1
-    per_head_cost = total_expense / total_members
-
-    # 2) Previous settlement (for carry-forward)
+    # 1) Previous settlement (for carry-forward & period boundary)
     cursor.execute(
         """
         SELECT id, period_end
@@ -214,25 +202,52 @@ def calculate_stay_settlement(trip_id: int):
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
 
-    
-    # 3️⃣ Carry-forward map — always from the latest finalized settlement
+    # Build date filter for the current period
+    expenses_date_clause = ""
+    date_params = [trip_id]
+    if prev_end_date:
+        # only expenses strictly AFTER the previous period_end
+        expenses_date_clause = "AND e.date > %s"
+        date_params.append(prev_end_date)
+
+    # 2) total_expense (PERIOD ONLY), total_members, per-head cost (float)
+    cursor.execute(
+        f"""SELECT COALESCE(SUM(e.amount), 0) AS total_expense
+            FROM expenses e
+            WHERE e.trip_id = %s {expenses_date_clause};
+        """,
+        tuple(date_params),
+    )
+    total_expense = float(cursor.fetchone()["total_expense"] or 0.0)
+
+    cursor.execute(
+        "SELECT COALESCE(SUM(members_count), 0) AS total_members FROM family_details WHERE trip_id = %s;",
+        (trip_id,),
+    )
+    total_members = int(cursor.fetchone()["total_members"] or 0) or 1
+    per_head_cost = total_expense / total_members
+
+    # 3) Carry-forward map — always from the latest finalized settlement (ADJUSTED preferred)
     previous_balance_map = {}
-    with get_connection() as cf_conn:
-        cf_cur = cf_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cf_cur.execute("""
-            SELECT ssd.family_id,
-                COALESCE(ssd.adjusted_balance, ssd.balance, 0.0) AS carry_forward_balance
-            FROM stay_settlement_details ssd
-            WHERE ssd.settlement_id = (
-                SELECT MAX(id) FROM stay_settlements WHERE trip_id = %s
-            );
-        """, (trip_id,))
-        for row in cf_cur.fetchall():
-            previous_balance_map[row["family_id"]] = float(row["carry_forward_balance"] or 0.0)
-        cf_cur.close()
+    if prev_settlement_id:
+        with get_connection() as cf_conn:
+            cf_cur = cf_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cf_cur.execute(
+                """
+                SELECT ssd.family_id,
+                       COALESCE(ssd.adjusted_balance, ssd.balance, 0.0) AS carry_forward_balance
+                FROM stay_settlement_details ssd
+                WHERE ssd.settlement_id = %s;
+                """,
+                (prev_settlement_id,),
+            )
+            for row in cf_cur.fetchall():
+                previous_balance_map[row["family_id"]] = float(row["carry_forward_balance"] or 0.0)
+            cf_cur.close()
 
     print(f"🧾 [DEBUG] Loaded carry-forward map for trip {trip_id}: {previous_balance_map}")
-    # 4) Compute family balances (Net)
+
+    # 4) Compute family balances (Net) using only PERIOD expenses
     cursor.execute(
         """
         SELECT id AS family_id, family_name, members_count
@@ -247,13 +262,14 @@ def calculate_stay_settlement(trip_id: int):
     results = []
     for f in families:
         fid = f["family_id"]
+        # period-spent for this family
         cursor.execute(
-            """
-            SELECT COALESCE(SUM(amount), 0) AS spent
-            FROM expenses
-            WHERE trip_id = %s AND payer_family_id = %s;
+            f"""
+            SELECT COALESCE(SUM(e.amount), 0) AS spent
+            FROM expenses e
+            WHERE e.trip_id = %s AND e.payer_family_id = %s {expenses_date_clause};
             """,
-            (trip_id, fid),
+            tuple(date_params + [fid]) if prev_end_date else (trip_id, fid),
         )
         spent = float(cursor.fetchone()["spent"] or 0.0)
         due = per_head_cost * int(f["members_count"])
@@ -384,7 +400,7 @@ def calculate_stay_settlement(trip_id: int):
             di += 1
 
     # 8) Period & finalize output (round for UI only)
-    period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
+    period_start = (prev_end_date + timedelta(days=1)) if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
     conn.close()
 
@@ -504,8 +520,9 @@ def record_stay_settlement(trip_id: int, result: dict):
                 (settlement_id, f["family_id"], net_balance, adjusted_balance),
             )
         print("✅ Family-level settlement details saved.")
-        conn.commit()      # <-- add this right after family-level details saved
+        conn.commit()      # commit summary + details before logging
         print(f"✅ Settlement summary & details committed (ID={settlement_id})")
+
         # 3) carry-forward log (idempotent and correct ordering)
         print(f"🧾 Calling record_carry_forward_log(prev={prev_id}, new={settlement_id})")
         record_carry_forward_log(
