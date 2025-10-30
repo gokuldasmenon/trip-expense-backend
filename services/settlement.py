@@ -255,7 +255,7 @@ def calculate_stay_settlement(trip_id: int):
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
 
-    # 3️⃣ Carry-forward map (previous balances)
+   
     # 3️⃣ Carry-forward map — use adjusted_balance (finalized)
     previous_balance_map = {}
     if prev_settlement_id:
@@ -337,57 +337,42 @@ def calculate_stay_settlement(trip_id: int):
         txn["to"] = txn.get("to_family")
 
     # 6️⃣ Apply adjustments (active transactions)
-    txns_to_use = active_txns if active_txns else archived_txns
     adjustments = {f["family_id"]: 0.0 for f in results}
-
-    for txn in txns_to_use:
+    for txn in active_txns:
         f_from, f_to = txn["from_family_id"], txn["to_family_id"]
         amt = float(txn["amount"])
+        # 'from' pays → their balance moves UP toward zero; 'to' receives → moves DOWN
         adjustments[f_from] = adjustments.get(f_from, 0.0) + amt
-        adjustments[f_to] = adjustments.get(f_to, 0.0) - amt
+        adjustments[f_to]   = adjustments.get(f_to,   0.0) - amt
 
-    print("🔧 Adjustments applied (payer pays = balance increases):")
     for f in results:
-        fid = f["family_id"]
-        adj = adjustments.get(fid, 0.0)
-        adjusted = f["balance"] + adj
-        f["adjusted_balance"] = adjusted
-        print(f"▶ {f['family_name']}: Net={f['balance']:.2f} + Adj({adj:+.2f}) = Adjusted={adjusted:.2f}")
+        f["adjusted_balance"] = f["balance"] + adjustments.get(f["family_id"], 0.0)
 
     # ✅ Normalize total adjusted to exactly 0.00 (final precision correction)
     total_adj = sum(f["adjusted_balance"] for f in results)
     if abs(total_adj) > 0.01:
-        correction = -total_adj
         target = max(results, key=lambda x: abs(x["adjusted_balance"]))
-        target["adjusted_balance"] += correction
-        print(f"🔧 Final correction {correction:+.2f} applied to {target['family_name']} (ensured total=0.00)")
+        target["adjusted_balance"] -= total_adj  # bring sum to exactly 0
 
     # 7️⃣ Suggested settlements
-    creditors = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]}
-                 for f in results if f["adjusted_balance"] > 0.01]
-    debtors = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]}
-               for f in results if f["adjusted_balance"] < -0.01]
-
+    creditors = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]} for f in results if f["adjusted_balance"] > 0.01]
+    debtors   = [{"family_name": f["family_name"], "bal": f["adjusted_balance"]} for f in results if f["adjusted_balance"] < -0.01]
     creditors.sort(key=lambda x: -x["bal"])
     debtors.sort(key=lambda x: x["bal"])
-
     suggested = []
-    ci, di = 0, 0
+    ci = di = 0
     while ci < len(creditors) and di < len(debtors):
         pay_amt = min(creditors[ci]["bal"], -debtors[di]["bal"])
-        if pay_amt <= 0:
-            break
+        if pay_amt <= 0: break
         suggested.append({
             "from": debtors[di]["family_name"],
-            "to": creditors[ci]["family_name"],
-            "amount": round(pay_amt)
+            "to":   creditors[ci]["family_name"],
+            "amount": round(pay_amt)  # whole rupees
         })
         creditors[ci]["bal"] -= pay_amt
-        debtors[di]["bal"] += pay_amt
-        if abs(creditors[ci]["bal"]) < 0.01:
-            ci += 1
-        if abs(debtors[di]["bal"]) < 0.01:
-            di += 1
+        debtors[di]["bal"]   += pay_amt
+        if abs(creditors[ci]["bal"]) < 0.01: ci += 1
+        if abs(debtors[di]["bal"])   < 0.01: di += 1
 
     # 8️⃣ Period and output formatting
     period_start = prev_end_date if prev_end_date else datetime.utcnow().date()
@@ -396,10 +381,10 @@ def calculate_stay_settlement(trip_id: int):
 
     # ✅ Round only for output (UI safety)
     for f in results:
-        f["total_spent"] = round(f["total_spent"])
-        f["due_amount"] = round(f["due_amount"])
+        f["total_spent"]      = round(f["total_spent"])
+        f["due_amount"]       = round(f["due_amount"])
         f["previous_balance"] = round(f["previous_balance"])
-        f["balance"] = round(f["balance"])
+        f["balance"]          = round(f["balance"])
         f["adjusted_balance"] = round(f["adjusted_balance"])
 
     return {
@@ -502,9 +487,14 @@ def record_stay_settlement(trip_id: int, result: dict):
 
         print("✅ Family-level settlement details saved (including adjusted balances).")
 
-        # 3️⃣ Create carry-forward log
+        # 3️⃣ Create carry-forward log (fix: correct argument order)
         print(f"🧾 Calling record_carry_forward_log(prev={prev_id}, new={settlement_id})")
-        record_carry_forward_log(prev_id, settlement_id, trip_id, cursor)
+        record_carry_forward_log(
+            prev_settlement_id=prev_id,
+            new_settlement_id=settlement_id,
+            trip_id=trip_id,
+            cursor=cursor
+        )
 
         # 4️⃣ Archive and clear all active settlement transactions
         cursor.execute("""
@@ -540,6 +530,7 @@ def record_stay_settlement(trip_id: int, result: dict):
 
 
 
+
 # ===============================================
 # 🧮 ORCHESTRATOR (USED BY /settlement/{trip_id})
 # ===============================================
@@ -555,79 +546,68 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
 
 def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cursor):
     """
-    Records carry-forward log entries for all families between settlements.
-    - If no previous settlement: creates baseline log (prev=0).
-    - Skips insertion if log for same (trip_id, new_settlement_id) already exists.
-    - Uses DB joins for accuracy and is idempotent.
+    Creates carry-forward log entries for all families between settlements.
+    - If no previous settlement: creates baseline entries (prev=0).
+    - If previous exists: computes delta = new.adjusted - prev.adjusted
+    - Safe against re-entry (idempotent).
     """
 
-    try:
-        # 🧩 Check if log already exists for this settlement
-        cursor.execute("""
-            SELECT COUNT(*) FROM stay_carry_forward_log
-            WHERE trip_id = %s AND new_settlement_id = %s;
-        """, (trip_id, new_settlement_id))
-        existing_count = cursor.fetchone()[0]
+    # 🧩 Skip if already logged
+    cursor.execute("""
+        SELECT COUNT(*) FROM stay_carry_forward_log
+        WHERE trip_id = %s AND new_settlement_id = %s;
+    """, (trip_id, new_settlement_id))
+    if cursor.fetchone()[0] > 0:
+        print(f"⚠️ [DEBUG] Carry-forward log already exists for trip {trip_id}, settlement {new_settlement_id} — skipping.")
+        return
 
-        if existing_count > 0:
-            print(f"⚠️ [DEBUG] Carry-forward log already exists for trip {trip_id}, settlement {new_settlement_id} — skipping.")
-            return
-
-        # 🧩 Case 1: First settlement (no previous)
-        if not prev_settlement_id:
-            print(f"🧾 [DEBUG] Trip {trip_id}: Creating baseline carry-forward log (first settlement, ID={new_settlement_id})")
-
-            cursor.execute("""
-                INSERT INTO stay_carry_forward_log (
-                    trip_id, previous_settlement_id, new_settlement_id,
-                    family_id, previous_balance, new_balance, delta, created_at
-                )
-                SELECT 
-                    %s AS trip_id,
-                    NULL AS previous_settlement_id,
-                    %s AS new_settlement_id,
-                    ssd.family_id,
-                    0.0 AS previous_balance,
-                    ssd.balance AS new_balance,
-                    ssd.balance AS delta,
-                    NOW() AS created_at
-                FROM stay_settlement_details ssd
-                WHERE ssd.settlement_id = %s;
-            """, (trip_id, new_settlement_id, new_settlement_id))
-
-            print(f"✅ [DEBUG] Baseline carry-forward log created — {cursor.rowcount} rows inserted.")
-            return
-
-        # 🧩 Case 2: Normal carry-forward (prev exists)
-        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={prev_settlement_id}, new={new_settlement_id})")
+    # 🧩 CASE 1: First settlement (baseline)
+    if not prev_settlement_id:
+        print(f"🧾 [DEBUG] Trip {trip_id}: Creating baseline carry-forward log (first settlement, ID={new_settlement_id})")
 
         cursor.execute("""
-            INSERT INTO stay_carry_forward_log (
+            INSERT INTO stay_carry_forward_log(
                 trip_id, previous_settlement_id, new_settlement_id,
                 family_id, previous_balance, new_balance, delta, created_at
             )
-            SELECT 
-                %s AS trip_id,
-                %s AS previous_settlement_id,
-                %s AS new_settlement_id,
+            SELECT
+                %s, NULL, %s,
                 ssd.family_id,
-                COALESCE(psd.balance, 0.0) AS previous_balance,
-                ssd.balance AS new_balance,
-                (ssd.balance - COALESCE(psd.balance, 0.0)) AS delta,
-                NOW() AS created_at
+                0.0,
+                COALESCE(ssd.adjusted_balance, ssd.balance, 0.0),
+                COALESCE(ssd.adjusted_balance, ssd.balance, 0.0),
+                NOW()
             FROM stay_settlement_details ssd
-            LEFT JOIN stay_settlement_details psd
-                ON psd.family_id = ssd.family_id
-               AND psd.settlement_id = %s
             WHERE ssd.settlement_id = %s;
-        """, (trip_id, prev_settlement_id, new_settlement_id, prev_settlement_id, new_settlement_id))
+        """, (trip_id, new_settlement_id, new_settlement_id))
 
-        print(f"✅ [DEBUG] Carry-forward log recorded successfully — {cursor.rowcount} rows inserted into stay_carry_forward_log.")
+        print(f"✅ [DEBUG] Baseline carry-forward log created — {cursor.rowcount} rows inserted.")
+        return
 
-    except Exception as e:
-        import traceback
-        print(f"⚠️ [DEBUG] Carry-forward log failed for trip {trip_id}: {e}")
-        traceback.print_exc()
+    # 🧩 CASE 2: Normal carry-forward (compare previous vs new)
+    print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={prev_settlement_id}, new={new_settlement_id})")
+
+    cursor.execute("""
+        INSERT INTO stay_carry_forward_log(
+            trip_id, previous_settlement_id, new_settlement_id,
+            family_id, previous_balance, new_balance, delta, created_at
+        )
+        SELECT
+            %s, %s, %s,
+            newd.family_id,
+            COALESCE(prevd.adjusted_balance, prevd.balance, 0.0) AS previous_balance,
+            COALESCE(newd.adjusted_balance, newd.balance, 0.0)   AS new_balance,
+            COALESCE(newd.adjusted_balance, newd.balance, 0.0)
+          - COALESCE(prevd.adjusted_balance, prevd.balance, 0.0) AS delta,
+            NOW()
+        FROM stay_settlement_details newd
+        LEFT JOIN stay_settlement_details prevd
+          ON prevd.family_id = newd.family_id
+         AND prevd.settlement_id = %s
+        WHERE newd.settlement_id = %s;
+    """, (trip_id, prev_settlement_id, new_settlement_id, prev_settlement_id, new_settlement_id))
+
+    print(f"✅ [DEBUG] Carry-forward log recorded successfully — {cursor.rowcount} rows inserted into stay_carry_forward_log.")
 
 
 
