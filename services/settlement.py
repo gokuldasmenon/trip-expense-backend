@@ -539,6 +539,11 @@ def record_stay_settlement(trip_id: int, result: dict):
         for f in result["families"]:
             net_balance = round(float(f.get("balance", 0.0)), 2)
             adjusted_balance = round(float(f.get("adjusted_balance", net_balance)), 2)
+            # 🔧 fix: clip tiny floats to 0
+            if abs(adjusted_balance) < 0.01:
+                adjusted_balance = 0.0
+            if abs(net_balance) < 0.01:
+                net_balance = 0.0
             cursor.execute(
                 """
                 INSERT INTO stay_settlement_details (
