@@ -214,21 +214,24 @@ def calculate_stay_settlement(trip_id: int):
     prev_settlement_id = prev["id"] if prev else None
     prev_end_date = prev["period_end"] if prev else None
 
-    # 3) Carry-forward map — use previously finalized adjusted_balance (fallback balance)
+    
+    # 3️⃣ Carry-forward map — always from the latest finalized settlement
     previous_balance_map = {}
-    if prev_settlement_id:
-        cursor.execute(
-            """
-            SELECT family_id,
-                   COALESCE(adjusted_balance, balance, 0.0) AS carry_forward_balance
-            FROM stay_settlement_details
-            WHERE settlement_id = %s;
-            """,
-            (prev_settlement_id,),
-        )
-        for row in cursor.fetchall():
-            previous_balance_map[row["family_id"]] = float(row["carry_forward_balance"])
+    with get_connection() as cf_conn:
+        cf_cur = cf_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cf_cur.execute("""
+            SELECT ssd.family_id,
+                COALESCE(ssd.adjusted_balance, ssd.balance, 0.0) AS carry_forward_balance
+            FROM stay_settlement_details ssd
+            WHERE ssd.settlement_id = (
+                SELECT MAX(id) FROM stay_settlements WHERE trip_id = %s
+            );
+        """, (trip_id,))
+        for row in cf_cur.fetchall():
+            previous_balance_map[row["family_id"]] = float(row["carry_forward_balance"] or 0.0)
+        cf_cur.close()
 
+    print(f"🧾 [DEBUG] Loaded carry-forward map for trip {trip_id}: {previous_balance_map}")
     # 4) Compute family balances (Net)
     cursor.execute(
         """
@@ -501,7 +504,8 @@ def record_stay_settlement(trip_id: int, result: dict):
                 (settlement_id, f["family_id"], net_balance, adjusted_balance),
             )
         print("✅ Family-level settlement details saved.")
-
+        conn.commit()      # <-- add this right after family-level details saved
+        print(f"✅ Settlement summary & details committed (ID={settlement_id})")
         # 3) carry-forward log (idempotent and correct ordering)
         print(f"🧾 Calling record_carry_forward_log(prev={prev_id}, new={settlement_id})")
         record_carry_forward_log(
