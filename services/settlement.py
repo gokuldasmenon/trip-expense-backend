@@ -453,9 +453,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     # 🧩 Avoid saving when all adjusted balances are zero (no new data)
     all_balances = [round(f.get("adjusted_balance", f["balance"]), 2) for f in result["families"]]
     if all(abs(b) < 0.01 for b in all_balances):
-        print(f"⚠️ Skipping settlement: All balances already settled for trip {trip_id}")
-        conn.close()
-        return last_id
+        print(f"ℹ️ All balances are settled for trip {trip_id}, recording zero-balance closure entry.")
 
     try:
         # 1️⃣ Insert summary record
