@@ -532,67 +532,82 @@ def get_stay_settlement(trip_id: int, period="on_demand", record=False):
         result["recorded_id"] = settlement_id
     result["carry_forward_total"] = round(sum(f["previous_balance"] for f in result["families"]))
     return result
-def record_carry_forward_log(trip_id: int, previous_settlement_id: int, new_settlement_id: int, families: list):
+def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cursor):
     """
-    Logs carry-forward balances for each family from the previous to the new stay settlement.
-    If this is the first settlement (no previous_settlement_id), creates a baseline log entry
-    with zero delta so that the Carry Forward Log page always has a record.
+    Records carry-forward log entries for all families between settlements.
+    - If no previous settlement: creates baseline log (prev=0).
+    - Skips insertion if log for same (trip_id, new_settlement_id) already exists.
+    - Uses DB joins for accuracy and is idempotent.
     """
+
     try:
-        conn = get_connection()
-        cursor = conn.cursor()
+        # 🧩 Check if log already exists for this settlement
+        cursor.execute("""
+            SELECT COUNT(*) FROM stay_carry_forward_log
+            WHERE trip_id = %s AND new_settlement_id = %s;
+        """, (trip_id, new_settlement_id))
+        existing_count = cursor.fetchone()[0]
 
-        # ✅ Handle the very first settlement (no previous one)
-        if not previous_settlement_id:
-            print(f"🧾 [DEBUG] Trip {trip_id}: Creating baseline carry-forward log (first settlement, ID={new_settlement_id})")
-            inserted_count = 0
-            for fam in families:
-                family_id = fam["family_id"]
-                prev_balance = 0.0
-                new_balance = float(fam.get("balance", 0.0))
-                delta = new_balance  # Since prev_balance = 0
-
-                cursor.execute("""
-                    INSERT INTO stay_carry_forward_log (
-                        trip_id, previous_settlement_id, new_settlement_id,
-                        family_id, previous_balance, new_balance, delta, created_at
-                    )
-                    VALUES (%s, NULL, %s, %s, %s, %s, %s, NOW());
-                """, (trip_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
-                inserted_count += 1
-
-            conn.commit()
-            conn.close()
-            print(f"✅ [DEBUG] Baseline carry-forward log created — {inserted_count} rows inserted.")
+        if existing_count > 0:
+            print(f"⚠️ [DEBUG] Carry-forward log already exists for trip {trip_id}, settlement {new_settlement_id} — skipping.")
             return
 
-        # ✅ For normal carry-forward (has previous settlement)
-        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={previous_settlement_id}, new={new_settlement_id})")
-
-        inserted_count = 0
-        for fam in families:
-            family_id = fam["family_id"]
-            prev_balance = float(fam.get("previous_balance", 0.0))
-            new_balance = float(fam.get("balance", 0.0))
-            delta = round(new_balance - prev_balance)
+        # 🧩 Case 1: First settlement (no previous)
+        if not prev_settlement_id:
+            print(f"🧾 [DEBUG] Trip {trip_id}: Creating baseline carry-forward log (first settlement, ID={new_settlement_id})")
 
             cursor.execute("""
                 INSERT INTO stay_carry_forward_log (
                     trip_id, previous_settlement_id, new_settlement_id,
                     family_id, previous_balance, new_balance, delta, created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW());
-            """, (trip_id, previous_settlement_id, new_settlement_id, family_id, prev_balance, new_balance, delta))
-            inserted_count += 1
+                SELECT 
+                    %s AS trip_id,
+                    NULL AS previous_settlement_id,
+                    %s AS new_settlement_id,
+                    ssd.family_id,
+                    0.0 AS previous_balance,
+                    ssd.balance AS new_balance,
+                    ssd.balance AS delta,
+                    NOW() AS created_at
+                FROM stay_settlement_details ssd
+                WHERE ssd.settlement_id = %s;
+            """, (trip_id, new_settlement_id, new_settlement_id))
 
-        conn.commit()
-        conn.close()
-        print(f"✅ [DEBUG] Carry-forward log recorded successfully — {inserted_count} rows inserted into stay_carry_forward_log.")
+            print(f"✅ [DEBUG] Baseline carry-forward log created — {cursor.rowcount} rows inserted.")
+            return
+
+        # 🧩 Case 2: Normal carry-forward (prev exists)
+        print(f"🧾 [DEBUG] Recording carry-forward log for trip {trip_id} (prev={prev_settlement_id}, new={new_settlement_id})")
+
+        cursor.execute("""
+            INSERT INTO stay_carry_forward_log (
+                trip_id, previous_settlement_id, new_settlement_id,
+                family_id, previous_balance, new_balance, delta, created_at
+            )
+            SELECT 
+                %s AS trip_id,
+                %s AS previous_settlement_id,
+                %s AS new_settlement_id,
+                ssd.family_id,
+                COALESCE(psd.balance, 0.0) AS previous_balance,
+                ssd.balance AS new_balance,
+                (ssd.balance - COALESCE(psd.balance, 0.0)) AS delta,
+                NOW() AS created_at
+            FROM stay_settlement_details ssd
+            LEFT JOIN stay_settlement_details psd
+                ON psd.family_id = ssd.family_id
+               AND psd.settlement_id = %s
+            WHERE ssd.settlement_id = %s;
+        """, (trip_id, prev_settlement_id, new_settlement_id, prev_settlement_id, new_settlement_id))
+
+        print(f"✅ [DEBUG] Carry-forward log recorded successfully — {cursor.rowcount} rows inserted into stay_carry_forward_log.")
 
     except Exception as e:
         import traceback
         print(f"⚠️ [DEBUG] Carry-forward log failed for trip {trip_id}: {e}")
         traceback.print_exc()
+
 
 
 
