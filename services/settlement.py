@@ -801,9 +801,10 @@ def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cur
 # ==========================================
 import json
 from decimal import Decimal
+from datetime import datetime, date
 
 # ==========================================
-# Stay Settlement → History Snapshot Writer (Decimal-safe)
+# Stay Settlement → History Snapshot Writer (Decimal + Datetime safe)
 # ==========================================
 def record_settlement_snapshot(
     trip_id: int,
@@ -815,19 +816,21 @@ def record_settlement_snapshot(
 ):
     """
     Inserts a snapshot of each finalized stay settlement into stay_settlement_history.
-    Automatically converts Decimal → float for JSON safety.
+    Automatically converts Decimal → float and datetime/date → ISO string for JSON safety.
     """
     conn = get_connection()
     cursor = conn.cursor()
 
     def _convert(obj):
-        """Recursively converts Decimal → float for JSON serialization."""
+        """Recursively converts Decimal → float and datetime/date → str for JSON serialization."""
         if isinstance(obj, list):
             return [_convert(x) for x in obj]
         elif isinstance(obj, dict):
             return {k: _convert(v) for k, v in obj.items()}
         elif isinstance(obj, Decimal):
             return float(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
         return obj
 
     try:
@@ -846,7 +849,7 @@ def record_settlement_snapshot(
             conn.close()
             return
 
-        # Safe-convert all data before JSON encoding
+        # Safe conversion
         family_summary = _convert(result_data.get("families", []))
         suggested_settlements = _convert(result_data.get("suggested", []))
         settlement_transactions = _convert(result_data.get("active_transactions", []))
@@ -899,3 +902,4 @@ def record_settlement_snapshot(
         traceback.print_exc()
     finally:
         conn.close()
+
