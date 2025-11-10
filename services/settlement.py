@@ -813,11 +813,13 @@ def record_settlement_snapshot(
     mode: str,
     result_data: dict,
     carry_forward_map: dict,
+    finalized_by: str = None,
 ):
     """
     Inserts a snapshot of each finalized stay settlement into stay_settlement_history.
-    Automatically converts Decimal → float and datetime/date → ISO string for JSON safety.
+    Includes full metadata such as period, trip type, finalized user, and delta summary.
     """
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -834,7 +836,7 @@ def record_settlement_snapshot(
         return obj
 
     try:
-        # Prevent duplicate snapshots
+        # 🔍 Skip duplicate entry
         cursor.execute(
             """
             SELECT 1 FROM stay_settlement_history
@@ -849,15 +851,56 @@ def record_settlement_snapshot(
             conn.close()
             return
 
-        # Safe conversion
+        # ============================
+        # 1️⃣ Extract metadata
+        # ============================
+        period_start = result_data.get("period_start")
+        period_end = result_data.get("period_end")
+        trip_type = mode.upper() if mode else "STAY"
+
+        # ============================
+        # 2️⃣ Compute delta summary (prev vs new)
+        # ============================
+        net_delta_summary = []
+        if prev_settlement_id:
+            cursor.execute(
+                """
+                SELECT ssd.family_id,
+                       COALESCE(ssd.adjusted_balance, ssd.balance, 0.0) AS prev_balance
+                FROM stay_settlement_details ssd
+                WHERE ssd.settlement_id = %s;
+                """,
+                (prev_settlement_id,),
+            )
+            prev_balances = {r[0]: float(r[1] or 0.0) for r in cursor.fetchall()}
+        else:
+            prev_balances = {}
+
+        for fid, new_bal in carry_forward_map.items():
+            old_bal = prev_balances.get(fid, 0.0)
+            net_delta_summary.append(
+                {
+                    "family_id": fid,
+                    "previous_balance": old_bal,
+                    "new_balance": float(new_bal),
+                    "delta": round(float(new_bal) - old_bal, 2),
+                }
+            )
+
+        # ============================
+        # 3️⃣ Prepare safe JSON content
+        # ============================
         family_summary = _convert(result_data.get("families", []))
         suggested_settlements = _convert(result_data.get("suggested", []))
         settlement_transactions = _convert(result_data.get("active_transactions", []))
         carry_forward_data = _convert(
             [{"family_id": fid, "balance": bal} for fid, bal in carry_forward_map.items()]
         )
+        net_delta_summary = _convert(net_delta_summary)
 
-        # Insert into history table
+        # ============================
+        # 4️⃣ Insert snapshot
+        # ============================
         cursor.execute(
             """
             INSERT INTO stay_settlement_history (
@@ -865,41 +908,52 @@ def record_settlement_snapshot(
                 prev_settlement_id,
                 new_settlement_id,
                 mode,
+                trip_type,
+                period_start,
+                period_end,
                 total_expense,
                 total_members,
                 per_head_cost,
+                finalized_by,
                 family_summary,
                 suggested_settlements,
                 settlement_transactions,
                 carry_forward_data,
+                net_delta_summary,
                 created_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s,
-                    %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, NOW());
+                    %s, %s, %s, %s,
+                    %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb,
+                    NOW());
             """,
             (
                 trip_id,
                 prev_settlement_id,
                 new_settlement_id,
                 mode,
+                trip_type,
+                period_start,
+                period_end,
                 float(result_data.get("total_expense", 0)),
                 int(result_data.get("total_members", 0)),
                 float(result_data.get("per_head_cost", 0.0)),
+                finalized_by,
                 json.dumps(family_summary),
                 json.dumps(suggested_settlements),
                 json.dumps(settlement_transactions),
                 json.dumps(carry_forward_data),
+                json.dumps(net_delta_summary),
             ),
         )
 
         conn.commit()
-        print(f"✅ Stay settlement history snapshot saved for trip {trip_id} (settlement_id={new_settlement_id})")
+        print(f"✅ Stay settlement snapshot (metadata) saved for trip {trip_id} (settlement_id={new_settlement_id})")
 
     except Exception as e:
         conn.rollback()
         import traceback
-        print(f"❌ Error while recording stay settlement history: {e}")
+        print(f"❌ Error while recording stay settlement snapshot: {e}")
         traceback.print_exc()
     finally:
         conn.close()
-
