@@ -3,3 +3,5 @@ uvicorn[standard]
 psycopg2-binary
 python-dotenv
 fpdf2==2.7.9
+qrcode[pil]==7.4.2
+Pillow>=10.0.0
