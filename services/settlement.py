@@ -796,3 +796,90 @@ def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cur
     print(
         f"✅ [DEBUG] Carry-forward log recorded successfully — {cursor.rowcount} rows inserted into stay_carry_forward_log."
     )
+# ==========================================
+# Stay Settlement → History Snapshot Writer
+# ==========================================
+def record_settlement_snapshot(
+    trip_id: int,
+    prev_settlement_id: int,
+    new_settlement_id: int,
+    mode: str,
+    result_data: dict,
+    carry_forward_map: dict,
+):
+    """
+    Inserts a snapshot of each finalized stay settlement into stay_settlement_history.
+    Stores all relevant data in JSONB columns for reporting and traceability.
+    Safe to call multiple times — idempotent per (trip_id, new_settlement_id).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Avoid duplicates
+        cursor.execute(
+            """
+            SELECT 1 FROM stay_settlement_history
+            WHERE trip_id = %s AND new_settlement_id = %s;
+            """,
+            (trip_id, new_settlement_id),
+        )
+        if cursor.fetchone():
+            print(
+                f"⚠️ [DEBUG] Settlement history already recorded for trip {trip_id}, settlement {new_settlement_id} — skipping."
+            )
+            conn.close()
+            return
+
+        # Prepare JSONB content
+        family_summary = result_data.get("families", [])
+        suggested_settlements = result_data.get("suggested", [])
+        settlement_transactions = result_data.get("active_transactions", [])
+        carry_forward_data = [
+            {"family_id": fid, "balance": bal} for fid, bal in carry_forward_map.items()
+        ]
+
+        # Insert into stay_settlement_history
+        cursor.execute(
+            """
+            INSERT INTO stay_settlement_history (
+                trip_id,
+                prev_settlement_id,
+                new_settlement_id,
+                mode,
+                total_expense,
+                total_members,
+                per_head_cost,
+                family_summary,
+                suggested_settlements,
+                settlement_transactions,
+                carry_forward_data,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, NOW());
+            """,
+            (
+                trip_id,
+                prev_settlement_id,
+                new_settlement_id,
+                mode,
+                result_data.get("total_expense", 0),
+                result_data.get("total_members", 0),
+                result_data.get("per_head_cost", 0.0),
+                json.dumps(family_summary),
+                json.dumps(suggested_settlements),
+                json.dumps(settlement_transactions),
+                json.dumps(carry_forward_data),
+            ),
+        )
+
+        conn.commit()
+        print(f"✅ Stay settlement history snapshot saved for trip {trip_id} (settlement_id={new_settlement_id})")
+
+    except Exception as e:
+        conn.rollback()
+        import traceback
+        print(f"❌ Error while recording stay settlement history: {e}")
+        traceback.print_exc()
+    finally:
+        conn.close()
