@@ -1,6 +1,7 @@
 # settlement.py
 
 from datetime import date, timedelta, datetime, timezone
+import json
 import psycopg2.extras
 
 from database import get_connection
@@ -25,6 +26,7 @@ def determine_period(period_type: str):
         start = end = today
 
     return (start, end)
+
 
 def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
     conn = get_connection()
@@ -147,6 +149,8 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
         "families": family_results,
         "transactions": transactions if transactions else "All accounts settled"
     }
+
+
 # =========================
 # Fetch last STAY settlement
 # =========================
@@ -167,6 +171,8 @@ def get_last_stay_settlement(trip_id: int):
     cursor.close()
     conn.close()
     return result
+
+
 def _build_expense_time_filter(cursor, prev_end_date, prev_created_at):
     """
     Returns (clause_sql, params_tuple) to append in WHERE for expenses.
@@ -176,7 +182,7 @@ def _build_expense_time_filter(cursor, prev_end_date, prev_created_at):
     if not prev_end_date and not prev_created_at:
         return ("", ())
 
-    # Check if expenses.created_at exists (metadata is cheap & cached by PG)
+    # Check if expenses.created_at exists
     cursor.execute("""
         SELECT 1
         FROM information_schema.columns
@@ -186,11 +192,10 @@ def _build_expense_time_filter(cursor, prev_end_date, prev_created_at):
     has_created_at = cursor.fetchone() is not None
 
     if has_created_at and prev_created_at:
-        # Best: strict “after the instant of finalize”
+        # strict: after instant of last finalize
         return (" AND e.created_at > %s ", (prev_created_at,))
     else:
-        # Fallback: include same-day entries
-        # NOTE: using to_date to avoid text/date operator errors.
+        # fall back: parse text date safely
         return (" AND to_date(e.date, 'YYYY-MM-DD') >= %s ", (prev_end_date or date.today(),))
 
 
@@ -208,7 +213,6 @@ def calculate_stay_settlement(trip_id: int):
     - IMPORTANT: Expenses are limited to the current period
                  (i.e., only after the last finalized settlement).
     """
-
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -227,15 +231,6 @@ def calculate_stay_settlement(trip_id: int):
 
     time_where_sql, time_where_params = _build_expense_time_filter(cursor, prev_end_date, prev_created_at)
 
-
-    # Build date filter for the current period
-    expenses_date_clause = ""
-    date_params = [trip_id]
-    if prev_end_date:
-        # only expenses strictly AFTER the previous period_end
-        expenses_date_clause = "AND e.date::date > %s"
-        date_params.append(prev_end_date)
-
     # 2) total_expense (PERIOD ONLY), total_members, per-head cost (float)
     cursor.execute(
         f"""SELECT COALESCE(SUM(e.amount), 0) AS total_expense
@@ -253,7 +248,7 @@ def calculate_stay_settlement(trip_id: int):
     total_members = int(cursor.fetchone()["total_members"] or 0) or 1
     per_head_cost = total_expense / total_members
 
-    # 3) Carry-forward map — always from the latest finalized settlement (ADJUSTED preferred)
+    # 3) Carry-forward map — from the latest finalized settlement (ADJUSTED preferred)
     previous_balance_map = {}
     if prev_settlement_id:
         with get_connection() as cf_conn:
@@ -297,8 +292,6 @@ def calculate_stay_settlement(trip_id: int):
             """,
             (trip_id, fid, *time_where_params) if time_where_params else (trip_id, fid)
         )
-  
-
         spent = float(cursor.fetchone()["spent"] or 0.0)
         due = per_head_cost * int(f["members_count"])
         prev_bal = previous_balance_map.get(fid, 0.0)
@@ -325,7 +318,7 @@ def calculate_stay_settlement(trip_id: int):
     #    - archived = last settlement's transactions (for UI only; NOT re-applied)
     cursor.execute(
         """
-        SELECT t.from_family_id,
+        SELECT t.id, t.from_family_id,
                f1.family_name AS from_family,
                t.to_family_id,
                f2.family_name AS to_family,
@@ -345,7 +338,7 @@ def calculate_stay_settlement(trip_id: int):
 
     cursor.execute(
         """
-        SELECT sta.from_family_id,
+        SELECT sta.id, sta.from_family_id,
                f1.family_name AS from_family,
                sta.to_family_id,
                f2.family_name AS to_family,
@@ -409,41 +402,28 @@ def calculate_stay_settlement(trip_id: int):
 
     suggested = []
     ci = di = 0
-
-    # Loop through creditors and debtors until both sides are cleared
     while ci < len(creditors) and di < len(debtors):
         c_bal = round(creditors[ci]["bal"], 2)
         d_bal = round(debtors[di]["bal"], 2)
-
-        # Skip if either side is effectively settled (within 0.01 tolerance)
         if c_bal < 0.01:
             ci += 1
             continue
         if d_bal > -0.01:
             di += 1
             continue
-
-        # Compute the transferable amount (keep full precision)
         pay_amt = min(c_bal, -d_bal)
-
-        # 🔧 FIX: ignore tiny or rounded-down zeros
         if pay_amt > 0.01:
             suggested.append({
                 "from": debtors[di]["family_name"],
                 "to": creditors[ci]["family_name"],
-                "amount": round(pay_amt)  # round only for display
+                "amount": round(pay_amt)
             })
-
-        # Update balances
         creditors[ci]["bal"] -= pay_amt
         debtors[di]["bal"] += pay_amt
-
-        # Move pointers if anyone is fully settled (within small epsilon)
         if abs(creditors[ci]["bal"]) < 0.01:
             ci += 1
         if abs(debtors[di]["bal"]) < 0.01:
             di += 1
-
 
     # 8) Period & finalize output (round for UI only)
     period_start = (prev_end_date + timedelta(days=1)) if prev_end_date else datetime.utcnow().date()
@@ -476,6 +456,58 @@ def calculate_stay_settlement(trip_id: int):
     }
 
 
+# =====================================================
+# Settlement history snapshot (optional, safe no-op)
+# =====================================================
+def record_settlement_snapshot(trip_id, prev_settlement_id, new_settlement_id, mode, result_data, carry_forward_map):
+    """
+    Saves a full settlement snapshot for historical tracking, if table exists.
+    If table doesn't exist, logs and skips without error.
+    """
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # check table existence once
+        cur.execute("""
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_name = 'stay_settlement_history'
+            LIMIT 1;
+        """)
+        if cur.fetchone() is None:
+            print("ℹ️ [SNAPSHOT] Table stay_settlement_history not found — skipping snapshot.")
+            conn.close()
+            return
+
+        cur.execute("""
+            INSERT INTO stay_settlement_history (
+                trip_id, prev_settlement_id, new_settlement_id,
+                mode, total_expense, total_members, per_head_cost,
+                family_summary, suggested_settlements, settlement_transactions, carry_forward_data
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """, (
+            trip_id,
+            prev_settlement_id,
+            new_settlement_id,
+            mode or "STAY",
+            result_data.get("total_expense", 0),
+            result_data.get("total_members", 0),
+            result_data.get("per_head_cost", 0),
+            json.dumps(result_data.get("families", [])),
+            json.dumps(result_data.get("suggested", [])),
+            json.dumps(result_data.get("active_transactions", [])),
+            json.dumps(carry_forward_map or {})
+        ))
+        conn.commit()
+        conn.close()
+        print(f"🧾 [SNAPSHOT] Settlement snapshot saved (trip={trip_id}, id={new_settlement_id}).")
+    except Exception as e:
+        # never break settlement flow due to snapshot
+        print(f"⚠️ [SNAPSHOT] Failed to record snapshot: {e}")
+
+
 # ======================================
 # Finalize & record STAY settlement
 # ======================================
@@ -488,7 +520,6 @@ def record_stay_settlement(trip_id: int, result: dict):
     - Prevents accidental duplicate re-finalization (<5s)
     - If everything is already adjusted to zero, records a zero-closure settlement
     """
-
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -553,11 +584,10 @@ def record_stay_settlement(trip_id: int, result: dict):
         settlement_id = cursor.fetchone()[0]
         print(f"✅ Settlement summary saved (ID={settlement_id})")
 
-        # 2) details — store both net & adjusted (no created_at column here)
+        # 2) details — store both net & adjusted
         for f in result["families"]:
             net_balance = round(float(f.get("balance", 0.0)), 2)
             adjusted_balance = round(float(f.get("adjusted_balance", net_balance)), 2)
-            # 🔧 fix: clip tiny floats to 0
             if abs(adjusted_balance) < 0.01:
                 adjusted_balance = 0.0
             if abs(net_balance) < 0.01:
@@ -581,6 +611,26 @@ def record_stay_settlement(trip_id: int, result: dict):
             new_settlement_id=settlement_id,
             trip_id=trip_id,
             cursor=cursor,
+        )
+
+        # 3b) settlement history snapshot (safe no-op if table missing)
+        carry_forward_map = {}
+        cursor.execute("""
+            SELECT family_id, adjusted_balance
+            FROM stay_settlement_details
+            WHERE settlement_id = %s;
+        """, (settlement_id,))
+        for row in cursor.fetchall():
+            fid, adj = row[0], float(row[1] or 0.0)
+            carry_forward_map[fid] = adj
+
+        record_settlement_snapshot(
+            trip_id=trip_id,
+            prev_settlement_id=prev_id,
+            new_settlement_id=settlement_id,
+            mode="STAY",
+            result_data=result,
+            carry_forward_map=carry_forward_map
         )
 
         # 4) archive & clear active settlement transactions
@@ -607,13 +657,13 @@ def record_stay_settlement(trip_id: int, result: dict):
     except Exception as e:
         conn.rollback()
         import traceback
-
         print(f"❌ Error while recording stay settlement: {e}")
         traceback.print_exc()
         raise
 
     finally:
         conn.close()
+
 
 def record_trip_settlement(trip_id: int, result: dict) -> int:
     """
@@ -664,6 +714,7 @@ def record_trip_settlement(trip_id: int, result: dict) -> int:
     print(f"✅ Trip settlement {settlement_id} recorded for trip {trip_id}")
     return settlement_id
 
+
 # ==========================================
 # Carry-forward Log (idempotent, DB-driven)
 # ==========================================
@@ -674,7 +725,6 @@ def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cur
     - If previous: delta = new.adjusted - prev.adjusted (fallback to balance)
     - Idempotent for (trip_id, new_settlement_id)
     """
-
     # skip if already logged
     cursor.execute(
         """

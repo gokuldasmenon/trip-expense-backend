@@ -1,3 +1,4 @@
+import json
 import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request
@@ -1034,4 +1035,174 @@ def get_trip_settlement_detail(settlement_id: int):
 
     settlement["details"] = details
     return settlement
+
+@app.get("/stay_settlement_snapshot/latest/{trip_id}")
+def get_latest_snapshot(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT *
+        FROM v_latest_stay_settlement_snapshot
+        WHERE trip_id = %s;
+    """, (trip_id,))
+    data = cursor.fetchone()
+    conn.close()
+    return data or {"message": "No snapshot found for this trip."}
+
+from fpdf import FPDF
+from fastapi.responses import StreamingResponse
+import qrcode
+import io
+import json
+import os
+from datetime import datetime
+
+COMPANY_NAME = "Your Company Name Pvt. Ltd."
+COMPANY_SUBTITLE = "Material & Expense Management System"
+COMPANY_LOGO_PATH = "./assets/company_logo.png"  # optional, safe if missing
+APP_BASE_URL = "https://yourapp.example.com/trip"  # change to your production frontend URL
+
+@app.get("/stay_settlement_report/{trip_id}")
+def generate_stay_settlement_report(trip_id: int, format: str = "pdf"):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cursor.execute("""
+        SELECT *
+        FROM v_latest_stay_settlement_snapshot
+        WHERE trip_id = %s;
+    """, (trip_id,))
+    snapshot = cursor.fetchone()
+    conn.close()
+
+    if not snapshot:
+        return {"message": "No settlement report available for this trip."}
+
+    # JSON fallback for automation or APIs
+    if format.lower() == "json":
+        return snapshot
+
+    # PDF generation
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # ======= HEADER SECTION =======
+    if os.path.exists(COMPANY_LOGO_PATH):
+        pdf.image(COMPANY_LOGO_PATH, x=10, y=8, w=25)
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, COMPANY_NAME, ln=True, align="C")
+    pdf.set_font("Helvetica", "I", 12)
+    pdf.cell(0, 10, COMPANY_SUBTITLE, ln=True, align="C")
+    pdf.ln(10)
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, "Trip Settlement Report", ln=True, align="C")
+    pdf.ln(8)
+
+    # QR code (optional)
+    qr_data = f"{APP_BASE_URL}/{trip_id}/settlement"
+    qr_img = qrcode.make(qr_data)
+    qr_buffer = io.BytesIO()
+    qr_img.save(qr_buffer, format="PNG")
+    qr_buffer.seek(0)
+    pdf.image(qr_buffer, x=170, y=20, w=30)
+
+    # ======= SUMMARY =======
+    pdf.set_font("Helvetica", "", 12)
+    pdf.cell(0, 10, f"Trip ID: {trip_id}", ln=True)
+    pdf.cell(0, 8, f"Mode: {snapshot['mode']}", ln=True)
+    pdf.cell(0, 8, f"Created at: {snapshot['created_at']}", ln=True)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Overall Summary", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"Total Expense: ₹{snapshot['total_expense']}", ln=True)
+    pdf.cell(0, 8, f"Total Members: {snapshot['total_members']}", ln=True)
+    pdf.cell(0, 8, f"Per Head Cost: ₹{snapshot['per_head_cost']}", ln=True)
+    pdf.ln(6)
+
+    # ======= FAMILY SUMMARY =======
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 10, "Family Settlement Summary", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    families = snapshot.get("family_summary", [])
+    if isinstance(families, str):
+        families = json.loads(families)
+
+    if families:
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(60, 8, "Family", 1, 0, "C", True)
+        pdf.cell(40, 8, "Spent (₹)", 1, 0, "C", True)
+        pdf.cell(40, 8, "Net (₹)", 1, 0, "C", True)
+        pdf.cell(40, 8, "Adjusted (₹)", 1, 1, "C", True)
+        for fam in families:
+            pdf.cell(60, 8, fam["family_name"], 1)
+            pdf.cell(40, 8, str(round(fam["total_spent"], 2)), 1, 0, "R")
+            pdf.cell(40, 8, str(round(fam["balance"], 2)), 1, 0, "R")
+            pdf.cell(40, 8, str(round(fam.get("adjusted_balance", fam["balance"]), 2)), 1, 1, "R")
+    else:
+        pdf.cell(0, 8, "No family data available.", ln=True)
+    pdf.ln(8)
+
+    # ======= SUGGESTED SETTLEMENTS =======
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 10, "Suggested Settlements (Who Pays Whom)", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    suggested = snapshot.get("suggested_settlements", [])
+    if isinstance(suggested, str):
+        suggested = json.loads(suggested)
+    if suggested:
+        for s in suggested:
+            pdf.cell(0, 8, f"{s['from']} → {s['to']} : ₹{s['amount']}", ln=True)
+    else:
+        pdf.cell(0, 8, "✅ All accounts settled.", ln=True)
+    pdf.ln(8)
+
+    # ======= TRANSACTIONS =======
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 10, "Settlement Transactions", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    txns = snapshot.get("settlement_transactions", [])
+    if isinstance(txns, str):
+        txns = json.loads(txns)
+    if txns:
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(60, 8, "From", 1, 0, "C", True)
+        pdf.cell(60, 8, "To", 1, 0, "C", True)
+        pdf.cell(30, 8, "Amount (₹)", 1, 0, "C", True)
+        pdf.cell(40, 8, "Remarks", 1, 1, "C", True)
+        for t in txns:
+            pdf.cell(60, 8, t["from_family"], 1)
+            pdf.cell(60, 8, t["to_family"], 1)
+            pdf.cell(30, 8, str(round(t["amount"], 2)), 1, 0, "R")
+            pdf.cell(40, 8, t.get("remarks", ""), 1, 1)
+    else:
+        pdf.cell(0, 8, "No manual settlement transactions recorded.", ln=True)
+    pdf.ln(8)
+
+    # ======= CARRY FORWARD =======
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 10, "Carry Forward Balances", ln=True)
+    pdf.set_font("Helvetica", "", 11)
+    cf_data = snapshot.get("carry_forward_data", {})
+    if isinstance(cf_data, str):
+        cf_data = json.loads(cf_data)
+    if cf_data:
+        for fid, bal in cf_data.items():
+            pdf.cell(0, 8, f"Family ID {fid}: ₹{bal}", ln=True)
+    else:
+        pdf.cell(0, 8, "No carry forward balances.", ln=True)
+    pdf.ln(10)
+
+    # ======= FOOTER =======
+    pdf.set_y(-25)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 8, f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True, align="R")
+    pdf.cell(0, 8, f"© {datetime.now().year} {COMPANY_NAME} | Confidential", align="C")
+
+    # Return PDF
+    pdf_bytes = pdf.output(dest="S").encode("latin1")
+    return StreamingResponse(io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=trip_{trip_id}_settlement_report.pdf"})
 
