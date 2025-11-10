@@ -799,6 +799,12 @@ def record_carry_forward_log(prev_settlement_id, new_settlement_id, trip_id, cur
 # ==========================================
 # Stay Settlement → History Snapshot Writer
 # ==========================================
+import json
+from decimal import Decimal
+
+# ==========================================
+# Stay Settlement → History Snapshot Writer (Decimal-safe)
+# ==========================================
 def record_settlement_snapshot(
     trip_id: int,
     prev_settlement_id: int,
@@ -809,14 +815,23 @@ def record_settlement_snapshot(
 ):
     """
     Inserts a snapshot of each finalized stay settlement into stay_settlement_history.
-    Stores all relevant data in JSONB columns for reporting and traceability.
-    Safe to call multiple times — idempotent per (trip_id, new_settlement_id).
+    Automatically converts Decimal → float for JSON safety.
     """
     conn = get_connection()
     cursor = conn.cursor()
 
+    def _convert(obj):
+        """Recursively converts Decimal → float for JSON serialization."""
+        if isinstance(obj, list):
+            return [_convert(x) for x in obj]
+        elif isinstance(obj, dict):
+            return {k: _convert(v) for k, v in obj.items()}
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        return obj
+
     try:
-        # Avoid duplicates
+        # Prevent duplicate snapshots
         cursor.execute(
             """
             SELECT 1 FROM stay_settlement_history
@@ -831,15 +846,15 @@ def record_settlement_snapshot(
             conn.close()
             return
 
-        # Prepare JSONB content
-        family_summary = result_data.get("families", [])
-        suggested_settlements = result_data.get("suggested", [])
-        settlement_transactions = result_data.get("active_transactions", [])
-        carry_forward_data = [
-            {"family_id": fid, "balance": bal} for fid, bal in carry_forward_map.items()
-        ]
+        # Safe-convert all data before JSON encoding
+        family_summary = _convert(result_data.get("families", []))
+        suggested_settlements = _convert(result_data.get("suggested", []))
+        settlement_transactions = _convert(result_data.get("active_transactions", []))
+        carry_forward_data = _convert(
+            [{"family_id": fid, "balance": bal} for fid, bal in carry_forward_map.items()]
+        )
 
-        # Insert into stay_settlement_history
+        # Insert into history table
         cursor.execute(
             """
             INSERT INTO stay_settlement_history (
@@ -856,16 +871,17 @@ def record_settlement_snapshot(
                 carry_forward_data,
                 created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, NOW());
+            VALUES (%s, %s, %s, %s, %s, %s, %s,
+                    %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, NOW());
             """,
             (
                 trip_id,
                 prev_settlement_id,
                 new_settlement_id,
                 mode,
-                result_data.get("total_expense", 0),
-                result_data.get("total_members", 0),
-                result_data.get("per_head_cost", 0.0),
+                float(result_data.get("total_expense", 0)),
+                int(result_data.get("total_members", 0)),
+                float(result_data.get("per_head_cost", 0.0)),
                 json.dumps(family_summary),
                 json.dumps(suggested_settlements),
                 json.dumps(settlement_transactions),
