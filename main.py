@@ -1292,11 +1292,7 @@ class PDFUnicode(FPDF):
 
 
 
-from fpdf import FPDF, HTMLMixin
-from fastapi.responses import FileResponse
-import qrcode
-import os
-from datetime import datetime
+
 
 from fpdf import FPDF
 from fastapi.responses import FileResponse
@@ -1310,8 +1306,6 @@ class FancyPDF(FPDF):
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
-
-        # Load fonts (Unicode-capable)
         self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
         self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
         self.add_font("DejaVu", "I", os.path.join(font_dir, "DejaVuSans-Oblique.ttf"), uni=True)
@@ -1435,5 +1429,7 @@ def download_pdf(trip_id: int):
         filename=f"Trip_{trip_id}_Settlement_Report.pdf",
         media_type="application/pdf"
     )
+
+    
 
 
