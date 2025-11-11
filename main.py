@@ -1306,6 +1306,8 @@ class FancyPDF(FPDF):
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
+
+        # Load fonts (Unicode-capable)
         self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
         self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
         self.add_font("DejaVu", "I", os.path.join(font_dir, "DejaVuSans-Oblique.ttf"), uni=True)
@@ -1430,6 +1432,161 @@ def download_pdf(trip_id: int):
         media_type="application/pdf"
     )
 
-    
+
+from fpdf import FPDF
+from fastapi.responses import FileResponse
+from fastapi import FastAPI
+import qrcode
+import os
+from datetime import datetime
+
+app = FastAPI()
+
+# ======================
+# Utility: Emoji Fallback
+# ======================
+def replace_emoji(text: str):
+    """Convert emojis to readable text if not renderable."""
+    emoji_map = {
+        "💰": "[Receive]",
+        "💸": "[Pay]",
+        "✅": "[Settled]",
+        "📊": "[Summary]",
+        "🧾": "[Report]",
+        "📱": "[QR]",
+        "👨‍👩‍👧": "[Members]",
+        "🏁": "[End]",
+    }
+    for emoji, replacement in emoji_map.items():
+        text = text.replace(emoji, replacement)
+    return text
+
+
+# ======================
+# Debug PDF Generator
+# ======================
+class DebugPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+        if not os.path.exists(font_dir):
+            font_dir = "/opt/render/project/src/fonts"
+
+        print(f"🟢 Font Directory: {font_dir}")
+
+        def load_font(fname, style=""):
+            path = os.path.join(font_dir, fname)
+            if os.path.exists(path):
+                self.add_font("DejaVu", style, path, uni=True)
+                print(f"✅ Loaded font: {fname}")
+            else:
+                print(f"⚠️ Font not found: {path}")
+
+        load_font("DejaVuSans.ttf", "")
+        load_font("DejaVuSans-Bold.ttf", "B")
+        load_font("DejaVuSans-Oblique.ttf", "I")
+
+        self.set_font("DejaVu", "", 12)
+
+    def safe_cell(self, w, h, text, *args, **kwargs):
+        text = replace_emoji(str(text))
+        self.cell(w, h, text, *args, **kwargs)
+
+    def safe_multi_cell(self, w, h, text, *args, **kwargs):
+        text = replace_emoji(str(text))
+        self.multi_cell(w, h, text, *args, **kwargs)
+
+
+# ======================
+# TEST ENDPOINT
+# ======================
+@app.get("/pdf_test")
+def pdf_test():
+    print("🧪 Generating PDF diagnostic test...")
+
+    pdf = DebugPDF()
+    pdf.add_page()
+
+    # --- Title
+    pdf.set_font("DejaVu", "B", 18)
+    pdf.set_text_color(20, 60, 160)
+    pdf.cell(0, 12, "🧾 PDF Diagnostic & Emoji + Color Test", ln=True, align="C")
+
+    pdf.set_font("DejaVu", "", 11)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(10)
+    pdf.safe_multi_cell(0, 8, """
+    This diagnostic file tests:
+    • Emoji rendering capability
+    • Font loading
+    • Table color fill
+    • QR code visibility
+    • Line and page layout
+    """)
+
+    # --- Font test
+    pdf.ln(5)
+    pdf.set_font("DejaVu", "B", 12)
+    pdf.cell(0, 10, "📊 Font & Emoji Display Test", ln=True)
+    pdf.set_font("DejaVu", "", 11)
+    test_texts = [
+        "✅ Success emoji",
+        "💸 Payment required",
+        "💰 Funds received",
+        "👨‍👩‍👧 Family summary",
+        "📱 QR available",
+        "🏁 End marker"
+    ]
+    for t in test_texts:
+        pdf.safe_cell(0, 8, t, ln=True)
+
+    # --- Color test
+    pdf.ln(10)
+    pdf.set_font("DejaVu", "B", 12)
+    pdf.cell(0, 10, "🎨 Color Rendering Test", ln=True)
+
+    colors = [
+        (255, 200, 200, "Red (Pay)"),
+        (200, 255, 200, "Green (Receive)"),
+        (220, 220, 255, "Blue (Info)"),
+        (240, 240, 240, "Neutral (Settled)"),
+    ]
+
+    pdf.set_font("DejaVu", "", 11)
+    for (r, g, b, label) in colors:
+        pdf.set_fill_color(r, g, b)
+        pdf.cell(60, 8, label, border=1, fill=True)
+        pdf.ln(8)
+
+    # --- QR Test
+    pdf.ln(10)
+    pdf.set_font("DejaVu", "B", 12)
+    pdf.cell(0, 10, "📱 QR Code Test", ln=True)
+    pdf.set_font("DejaVu", "", 10)
+    pdf.cell(0, 8, "Testing QR image placement...", ln=True)
+
+    qr_data = "https://example.com/test_qr_check"
+    qr_img = qrcode.make(qr_data)
+    qr_path = "/tmp/debug_qr.png"
+    qr_img.save(qr_path)
+    pdf.image(qr_path, x=150, y=pdf.get_y(), w=35)
+    pdf.set_y(pdf.get_y() + 40)
+    pdf.cell(0, 8, "QR should appear above-right corner of this text.", ln=True)
+
+    # --- Footer
+    pdf.ln(15)
+    pdf.set_font("DejaVu", "I", 9)
+    pdf.safe_cell(0, 8, f"Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — Test Complete", ln=True, align="R")
+
+    file_path = "/tmp/pdf_diagnostic_test.pdf"
+    pdf.output(file_path)
+    print(f"✅ Diagnostic PDF generated: {file_path}")
+
+    return FileResponse(
+        path=file_path,
+        filename="PDF_Diagnostic_Test.pdf",
+        media_type="application/pdf"
+    )
+
 
 
