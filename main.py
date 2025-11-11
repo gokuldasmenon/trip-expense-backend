@@ -1208,15 +1208,39 @@ def generate_stay_settlement_report(trip_id: int, format: str = "pdf"):
 # 📄 /download_pdf/{trip_id} — Generate & Download Settlement PDF
 # ==============================================================
 
+import os
+from fpdf import FPDF
+
 class PDFUnicode(FPDF):
     def __init__(self):
         super().__init__()
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
-        # Fallback if running from Render where path may differ
+
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
-        self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
-        self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
+
+        print(f"🟢 Loading fonts from: {font_dir}")
+
+        def try_add_font(name, style, file):
+            path = os.path.join(font_dir, file)
+            if os.path.exists(path):
+                self.add_font("DejaVu", style, path, uni=True)
+                print(f"✅ Loaded font: {file}")
+            else:
+                print(f"⚠️ Font not found: {file}")
+
+        try_add_font("DejaVu", "", "DejaVuSans.ttf")
+        try_add_font("DejaVu", "B", "DejaVuSans-Bold.ttf")
+        try_add_font("DejaVu", "I", "DejaVuSans-Oblique.ttf")  # may be missing
+
+    def safe_set_font(self, family="DejaVu", style="", size=10):
+        """Safely use font even if a variant (like Italic) is missing."""
+        try:
+            self.set_font(family, style, size)
+        except Exception as e:
+            print(f"⚠️ Font {family}{style} not found, using regular: {e}")
+            self.set_font(family, "", size)
+
 
 @app.get("/download_pdf/{trip_id}")
 def download_pdf(trip_id: int):
