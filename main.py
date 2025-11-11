@@ -18,6 +18,12 @@ from services import trips, families, expenses, advances, settlement
 from io import BytesIO
 import os
 import sys
+# main.py
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from services.reports import  generate_settlement_pdf, share_pdf_via_whatsapp
+
+
 print("🚀 Starting FastAPI from:", __file__)
 print("🧭 Working Directory:", os.getcwd())
 print("📦 Python Path:", sys.path)
@@ -1060,12 +1066,7 @@ def get_trip_settlement_detail(settlement_id: int):
     settlement["details"] = details
     return settlement
 
-# main.py
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from services.reports import  generate_settlement_pdf, send_whatsapp_message, share_pdf_via_whatsapp
 
-app = FastAPI()
 
 
 
