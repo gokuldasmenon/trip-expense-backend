@@ -181,16 +181,4 @@ def share_pdf_via_whatsapp(trip_id: int):
     }
 
 
-# ============================================================
-# 🧪 CLI Test Runner
-# ============================================================
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("⚠️ Usage: python -m services.reports <trip_id>")
-        sys.exit(1)
 
-    trip_id = int(sys.argv[1])
-    print(f"🧪 Testing PDF generation for trip_id={trip_id}...")
-    path = generate_settlement_pdf(trip_id)
-    print(f"✅ PDF generated successfully at: {path}")

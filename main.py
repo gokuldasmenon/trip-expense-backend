@@ -24,10 +24,6 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from services.reports import  generate_settlement_pdf, share_pdf_via_whatsapp
 
 
-print("🚀 Starting FastAPI from:", __file__)
-print("🧭 Working Directory:", os.getcwd())
-print("📦 Python Path:", sys.path)
-
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
@@ -1087,3 +1083,47 @@ def share_pdf(trip_id: int):
     return share_pdf_via_whatsapp(trip_id)
 
 
+@app.get("/settlement_snapshot/{trip_id}")
+def settlement_snapshot(trip_id: int):
+    """
+    Returns the latest settlement snapshot for a trip.
+    This is used by Flutter's ReportPage to show summary info.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT trip_name, total_expense, total_members, per_head_cost,
+               family_summary, suggested_settlements, created_at
+        FROM v_latest_stay_settlement_snapshot
+        WHERE trip_id = %s
+        ORDER BY created_at DESC
+        LIMIT 1;
+    """, (trip_id,))
+    record = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="No settlement snapshot found")
+
+    (
+        trip_name,
+        total_expense,
+        total_members,
+        per_head_cost,
+        family_summary,
+        suggested,
+        created_at,
+    ) = record
+
+    return {
+        "trip_id": trip_id,
+        "trip_name": trip_name,
+        "total_expense": total_expense,
+        "total_members": total_members,
+        "per_head_cost": per_head_cost,
+        "family_summary": family_summary,
+        "suggested_settlements": suggested,
+        "created_at": created_at.isoformat() if created_at else None,
+    }
