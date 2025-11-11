@@ -1382,7 +1382,7 @@ def download_pdf(trip_id: int):
     pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
     pdf.ln(35)
     pdf.set_font("DejaVu", "I", 9)
-    pdf.cell(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
+    pdf.cell_safe(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
 
     # --- Save PDF
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
