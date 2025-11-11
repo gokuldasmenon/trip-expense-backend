@@ -3,7 +3,7 @@ import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 import psycopg2, psycopg2.extras, random, string
 from datetime import datetime
 import time
@@ -1208,6 +1208,13 @@ def generate_stay_settlement_report(trip_id: int, format: str = "pdf"):
 # 📄 /download_pdf/{trip_id} — Generate & Download Settlement PDF
 # ==============================================================
 
+class PDFUnicode(FPDF):
+    def __init__(self):
+        super().__init__()
+        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+        self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
+        self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
+
 @app.get("/download_pdf/{trip_id}")
 def download_pdf(trip_id: int):
     conn = get_connection()
@@ -1228,24 +1235,18 @@ def download_pdf(trip_id: int):
     if not record:
         return {"error": f"No settlement snapshot found for trip_id {trip_id}"}
 
-    # Extract data
-    trip_name = record[0]
-    total_expense = record[1]
-    total_members = record[2]
-    per_head_cost = record[3]
-    family_summary = record[4]
-    suggested = record[5]
-    created_at = record[6]
+    trip_name, total_expense, total_members, per_head_cost, family_summary, suggested, created_at = record
 
     # Create PDF
-    pdf = FPDF()
+    pdf = PDFUnicode()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
     # --- Header
-    pdf.set_font("Arial", "B", 16)
+    pdf.set_font("DejaVu", "B", 16)
     pdf.cell(0, 10, f"Trip Settlement Report — {trip_name}", ln=True, align="C")
-    pdf.set_font("Arial", "", 12)
+
+    pdf.set_font("DejaVu", "", 12)
     pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
     pdf.cell(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
     pdf.cell(0, 8, f"Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
@@ -1255,30 +1256,33 @@ def download_pdf(trip_id: int):
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(8)
 
-    # --- Family Summary
-    pdf.set_font("Arial", "B", 12)
+    # --- Family Summary Table
+    pdf.set_font("DejaVu", "B", 12)
     pdf.cell(0, 10, "📊 Family Settlement Summary", ln=True)
-    pdf.set_font("Arial", "", 11)
+
+    pdf.set_font("DejaVu", "B", 11)
     pdf.cell(60, 8, "Family", 1)
     pdf.cell(30, 8, "Spent", 1)
     pdf.cell(30, 8, "Due", 1)
     pdf.cell(30, 8, "Adjusted", 1)
     pdf.cell(30, 8, "Status", 1, ln=True)
 
+    pdf.set_font("DejaVu", "", 11)
     for f in family_summary:
-        pdf.cell(60, 8, f["family_name"], 1)
-        pdf.cell(30, 8, f"₹{f['total_spent']}", 1)
-        pdf.cell(30, 8, f"₹{f['due_amount']}", 1)
-        pdf.cell(30, 8, f"₹{f['adjusted_balance']}", 1)
+        pdf.cell(60, 8, f.get("family_name", ""), 1)
+        pdf.cell(30, 8, f"₹{f.get('total_spent', 0)}", 1)
+        pdf.cell(30, 8, f"₹{f.get('due_amount', 0)}", 1)
+        pdf.cell(30, 8, f"₹{f.get('adjusted_balance', 0)}", 1)
         status = "✅ Settled" if f["adjusted_balance"] == 0 else (
             "💰 To Receive" if f["adjusted_balance"] > 0 else "💸 To Pay"
         )
         pdf.cell(30, 8, status, 1, ln=True)
 
+    # --- Suggested Settlements
     pdf.ln(10)
-    pdf.set_font("Arial", "B", 12)
+    pdf.set_font("DejaVu", "B", 12)
     pdf.cell(0, 10, "💸 Suggested Settlements (Who Pays Whom)", ln=True)
-    pdf.set_font("Arial", "", 11)
+    pdf.set_font("DejaVu", "", 11)
 
     if suggested:
         for s in suggested:
@@ -1294,10 +1298,10 @@ def download_pdf(trip_id: int):
     qr_img.save(qr_path)
     pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
     pdf.ln(35)
-    pdf.set_font("Arial", "I", 9)
+    pdf.set_font("DejaVu", "I", 9)
     pdf.cell(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
 
-    # --- Save and respond
+    # --- Save PDF
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
     pdf.output(file_path)
     print(f"✅ PDF generated for trip {trip_id}: {file_path}")
