@@ -1318,20 +1318,20 @@ def download_pdf(trip_id: int):
 
     trip_name, total_expense, total_members, per_head_cost, family_summary, suggested, created_at = record
 
-    # Create PDF
+    # --- Create PDF
     pdf = PDFUnicode()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
     # --- Header
     pdf.set_font("DejaVu", "B", 16)
-    pdf.cell_unicode(0, 10, f"Trip Settlement Report — {trip_name}", ln=True, align="C")
+    pdf.cell_unicode(0, 10, f"🧾 Trip Settlement Report — {trip_name}", ln=True, align="C")
 
     pdf.set_font("DejaVu", "", 12)
     pdf.cell_unicode(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
     pdf.cell_unicode(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell_unicode(0, 8, f"Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
-    pdf.cell_unicode(0, 8, f"Total Members: {total_members}", ln=True)
+    pdf.cell_unicode(0, 8, f"💰 Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
+    pdf.cell_unicode(0, 8, f"👨‍👩‍👧 Members: {total_members}", ln=True)
     pdf.ln(5)
     pdf.set_draw_color(180, 180, 180)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
@@ -1354,10 +1354,11 @@ def download_pdf(trip_id: int):
         pdf.cell_unicode(30, 8, f"₹{f.get('total_spent', 0)}", 1)
         pdf.cell_unicode(30, 8, f"₹{f.get('due_amount', 0)}", 1)
         pdf.cell_unicode(30, 8, f"₹{f.get('adjusted_balance', 0)}", 1)
+
         status = "✅ Settled" if f["adjusted_balance"] == 0 else (
             "💰 To Receive" if f["adjusted_balance"] > 0 else "💸 To Pay"
         )
-        pdf.cell(30, 8, status, 1, ln=True)
+        pdf.cell_unicode(30, 8, status, 1, ln=True)
 
     # --- Suggested Settlements
     pdf.ln(10)
@@ -1373,14 +1374,14 @@ def download_pdf(trip_id: int):
 
     # --- QR Code
     pdf.ln(10)
-    qr_data = f"https://trip-expense-backend.onrender.com//trips/{trip_id}/settlement"
+    qr_data = f"https://yourdomain.com/trips/{trip_id}/settlement"
     qr_img = qrcode.make(qr_data)
     qr_path = f"/tmp/settlement_{trip_id}.png"
     qr_img.save(qr_path)
     pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
     pdf.ln(35)
     pdf.set_font("DejaVu", "I", 9)
-    pdf.cell_unicode(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
+    pdf.cell_unicode(0, 10, f"📱 Scan QR to view trip #{trip_id} online", ln=True, align="R")
 
     # --- Save PDF
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
