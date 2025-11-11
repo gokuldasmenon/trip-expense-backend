@@ -1214,28 +1214,41 @@ from fpdf import FPDF
 import os
 from fpdf import FPDF
 
+import os
+from fpdf import FPDF
+import re
+
 class PDFUnicode(FPDF):
     def __init__(self):
         super().__init__()
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
 
-        # Fallback for Render deployments
+        # Fallback for Render
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
 
         print(f"🟢 Loading fonts from: {font_dir}")
 
-        # Load fonts safely
+        # Load DejaVu fonts
         self._load_font("DejaVuSans.ttf", "")
         self._load_font("DejaVuSans-Bold.ttf", "B")
         self._load_font("DejaVuSans-Oblique.ttf", "I")
 
+        # Load emoji font
+        emoji_font_path = os.path.join(font_dir, "NotoColorEmoji.ttf")
+        if os.path.exists(emoji_font_path):
+            try:
+                self.add_font("NotoEmoji", "", emoji_font_path, uni=True)
+                print("✅ Loaded emoji font: NotoColorEmoji.ttf")
+            except Exception as e:
+                print(f"⚠️ Could not load emoji font: {e}")
+        else:
+            print(f"⚠️ Emoji font not found: {emoji_font_path}")
+
     def _load_font(self, filename, style):
-        """Load a specific font file if it exists."""
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
-
         path = os.path.join(font_dir, filename)
         if os.path.exists(path):
             try:
@@ -1246,56 +1259,37 @@ class PDFUnicode(FPDF):
         else:
             print(f"⚠️ Font file not found: {path}")
 
-    def safe_set_font(self, family="DejaVu", style="", size=10):
-        """Set a font safely, fallback to normal if variant missing."""
-        try:
-            self.set_font(family, style, size)
-        except Exception as e:
-            print(f"⚠️ Font variant {family}{style} missing, fallback: {e}")
-            self.set_font(family, "", size)
+    def write_unicode(self, h, txt):
+        """Automatically switch to emoji font when needed."""
+        emoji_pattern = re.compile("[\U0001F300-\U0001FAFF]+", flags=re.UNICODE)
+        chunks = emoji_pattern.split(txt)
+        emojis = emoji_pattern.findall(txt)
 
-    def write_safe(self, h, txt):
-        """Write text after replacing unsupported emojis."""
-        clean_txt = self._replace_emojis(txt)
-        try:
-            self.write(h, clean_txt)
-        except Exception as e:
-            print(f"⚠️ Failed to write text '{txt}': {e}")
-            self.write(h, clean_txt.encode('utf-8', 'ignore').decode('utf-8'))
+        for i, chunk in enumerate(chunks):
+            if chunk:
+                self.set_font("DejaVu", "", 11)
+                self.write(h, chunk)
+            if i < len(emojis):
+                self.set_font("NotoEmoji", "", 11)
+                self.write(h, emojis[i])
 
-    def cell_safe(self, w, h, txt, border=0, ln=0, align='', fill=False, link=''):
-        """Draw cell text safely (emoji-cleaned)."""
-        clean_txt = self._replace_emojis(txt)
-        try:
-            self.cell(w, h, clean_txt, border, ln, align, fill, link)
-        except Exception as e:
-            print(f"⚠️ Failed to draw cell '{txt}': {e}")
-            self.cell(w, h, clean_txt.encode('utf-8', 'ignore').decode('utf-8'), border, ln, align, fill, link)
+    def cell_unicode(self, w, h, txt, border=0, ln=0, align='', fill=False):
+        """Emoji-aware cell method."""
+        emoji_pattern = re.compile("[\U0001F300-\U0001FAFF]+", flags=re.UNICODE)
+        chunks = emoji_pattern.split(txt)
+        emojis = emoji_pattern.findall(txt)
 
-    def _replace_emojis(self, text):
-        """Convert unsupported emojis into readable text equivalents."""
-        if not text:
-            return text
+        x = self.get_x()
+        for i, chunk in enumerate(chunks):
+            if chunk:
+                self.set_font("DejaVu", "", 11)
+                self.cell(w / (len(chunks) + len(emojis)), h, chunk, border, 0, align, fill)
+            if i < len(emojis):
+                self.set_font("NotoEmoji", "", 11)
+                self.cell(w / (len(chunks) + len(emojis)), h, emojis[i], border, 0, align, fill)
+        if ln:
+            self.ln(h)
 
-        emoji_map = {
-            "💰": "[Expense]",
-            "💸": "[Payment]",
-            "✅": "[Settled]",
-            "📊": "[Summary]",
-            "🧾": "[Report]",
-            "🧮": "[Calculation]",
-            "⚙️": "[Config]",
-            "▶": "→",
-            "🔧": "[Adjust]",
-            "🏁": "[Final]",
-            "📦": "[Archive]",
-            "ℹ️": "[Info]",
-        }
-
-        for emoji, replacement in emoji_map.items():
-            text = text.replace(emoji, replacement)
-
-        return text
 
 
 @app.get("/download_pdf/{trip_id}")
@@ -1304,13 +1298,17 @@ def download_pdf(trip_id: int):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT trip_name, total_expense, total_members, per_head_cost,
-               family_summary, suggested_settlements, created_at
-        FROM v_latest_stay_settlement_snapshot
-        WHERE trip_id = %s
-        ORDER BY created_at DESC
+        SELECT 
+            COALESCE(v.trip_name, t.trip_name) AS trip_name,
+            v.total_expense, v.total_members, v.per_head_cost,
+            v.family_summary, v.suggested_settlements, v.created_at
+        FROM v_latest_stay_settlement_snapshot v
+        LEFT JOIN trips t ON v.trip_id = t.id
+        WHERE v.trip_id = %s
+        ORDER BY v.created_at DESC
         LIMIT 1;
     """, (trip_id,))
+
     record = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -1327,13 +1325,13 @@ def download_pdf(trip_id: int):
 
     # --- Header
     pdf.set_font("DejaVu", "B", 16)
-    pdf.cell(0, 10, f"Trip Settlement Report — {trip_name}", ln=True, align="C")
+    pdf.cell_unicode(0, 10, f"Trip Settlement Report — {trip_name}", ln=True, align="C")
 
     pdf.set_font("DejaVu", "", 12)
-    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell(0, 8, f"Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
-    pdf.cell(0, 8, f"Total Members: {total_members}", ln=True)
+    pdf.cell_unicode(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell_unicode(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell_unicode(0, 8, f"Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
+    pdf.cell_unicode(0, 8, f"Total Members: {total_members}", ln=True)
     pdf.ln(5)
     pdf.set_draw_color(180, 180, 180)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
@@ -1341,21 +1339,21 @@ def download_pdf(trip_id: int):
 
     # --- Family Summary Table
     pdf.set_font("DejaVu", "B", 12)
-    pdf.cell(0, 10, "📊 Family Settlement Summary", ln=True)
+    pdf.cell_unicode(0, 10, "📊 Family Settlement Summary", ln=True)
 
     pdf.set_font("DejaVu", "B", 11)
-    pdf.cell(60, 8, "Family", 1)
-    pdf.cell(30, 8, "Spent", 1)
-    pdf.cell(30, 8, "Due", 1)
-    pdf.cell(30, 8, "Adjusted", 1)
-    pdf.cell(30, 8, "Status", 1, ln=True)
+    pdf.cell_unicode(60, 8, "Family", 1)
+    pdf.cell_unicode(30, 8, "Spent", 1)
+    pdf.cell_unicode(30, 8, "Due", 1)
+    pdf.cell_unicode(30, 8, "Adjusted", 1)
+    pdf.cell_unicode(30, 8, "Status", 1, ln=True)
 
     pdf.set_font("DejaVu", "", 11)
     for f in family_summary:
-        pdf.cell(60, 8, f.get("family_name", ""), 1)
-        pdf.cell(30, 8, f"₹{f.get('total_spent', 0)}", 1)
-        pdf.cell(30, 8, f"₹{f.get('due_amount', 0)}", 1)
-        pdf.cell(30, 8, f"₹{f.get('adjusted_balance', 0)}", 1)
+        pdf.cell_unicode(60, 8, f.get("family_name", ""), 1)
+        pdf.cell_unicode(30, 8, f"₹{f.get('total_spent', 0)}", 1)
+        pdf.cell_unicode(30, 8, f"₹{f.get('due_amount', 0)}", 1)
+        pdf.cell_unicode(30, 8, f"₹{f.get('adjusted_balance', 0)}", 1)
         status = "✅ Settled" if f["adjusted_balance"] == 0 else (
             "💰 To Receive" if f["adjusted_balance"] > 0 else "💸 To Pay"
         )
@@ -1364,25 +1362,25 @@ def download_pdf(trip_id: int):
     # --- Suggested Settlements
     pdf.ln(10)
     pdf.set_font("DejaVu", "B", 12)
-    pdf.cell(0, 10, "💸 Suggested Settlements (Who Pays Whom)", ln=True)
+    pdf.cell_unicode(0, 10, "💸 Suggested Settlements (Who Pays Whom)", ln=True)
     pdf.set_font("DejaVu", "", 11)
 
     if suggested:
         for s in suggested:
-            pdf.cell(0, 8, f"{s['from']} → {s['to']} : ₹{s['amount']}", ln=True)
+            pdf.cell_unicode(0, 8, f"{s['from']} → {s['to']} : ₹{s['amount']}", ln=True)
     else:
-        pdf.cell(0, 8, "✅ All accounts settled!", ln=True)
+        pdf.cell_unicode(0, 8, "✅ All accounts settled!", ln=True)
 
     # --- QR Code
     pdf.ln(10)
-    qr_data = f"https://yourdomain.com/trips/{trip_id}/settlement"
+    qr_data = f"https://trip-expense-backend.onrender.com//trips/{trip_id}/settlement"
     qr_img = qrcode.make(qr_data)
     qr_path = f"/tmp/settlement_{trip_id}.png"
     qr_img.save(qr_path)
     pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
     pdf.ln(35)
     pdf.set_font("DejaVu", "I", 9)
-    pdf.cell_safe(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
+    pdf.cell_unicode(0, 10, f"Scan QR to view trip #{trip_id} online", ln=True, align="R")
 
     # --- Save PDF
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
