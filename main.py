@@ -16,6 +16,12 @@ from models import (
 )
 from services import trips, families, expenses, advances, settlement
 from io import BytesIO
+import os
+import sys
+print("🚀 Starting FastAPI from:", __file__)
+print("🧭 Working Directory:", os.getcwd())
+print("📦 Python Path:", sys.path)
+
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
