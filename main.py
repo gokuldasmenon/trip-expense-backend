@@ -1212,6 +1212,9 @@ class PDFUnicode(FPDF):
     def __init__(self):
         super().__init__()
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+        # Fallback if running from Render where path may differ
+        if not os.path.exists(font_dir):
+            font_dir = "/opt/render/project/src/fonts"
         self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
         self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
 
