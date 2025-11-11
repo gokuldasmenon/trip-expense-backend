@@ -1039,31 +1039,12 @@ def get_trip_settlement_detail(settlement_id: int):
 # main.py
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from services.reports import fetch_latest_snapshot, generate_settlement_pdf, send_whatsapp_message, share_pdf_via_whatsapp
+from services.reports import  generate_settlement_pdf, send_whatsapp_message, share_pdf_via_whatsapp
 
 app = FastAPI()
 
 
-@app.get("/settlement_snapshot/{trip_id}")
-def get_settlement_snapshot(trip_id: int):
-    """Return the latest settlement snapshot as JSON for Flutter rendering."""
-    record = fetch_latest_snapshot(trip_id)
-    if not record:
-        return {"error": f"No settlement snapshot found for trip_id {trip_id}"}
 
-    trip_name, total_expense, total_members, per_head_cost, family_summary, suggested, txns, carry_forward, created_at = record
-    return {
-        "trip_id": trip_id,
-        "trip_name": trip_name,
-        "total_expense": float(total_expense or 0),
-        "per_head_cost": float(per_head_cost or 0),
-        "total_members": total_members,
-        "family_summary": family_summary,
-        "suggested": suggested,
-        "settlement_transactions": txns,
-        "carry_forward_data": carry_forward,
-        "created_at": created_at.isoformat() if created_at else None,
-    }
 
 
 @app.get("/download_pdf/{trip_id}")
