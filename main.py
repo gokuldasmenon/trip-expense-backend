@@ -1292,6 +1292,27 @@ class PDFUnicode(FPDF):
 
 
 
+from fpdf import FPDF, HTMLMixin
+from fastapi.responses import FileResponse
+import qrcode
+import os
+from datetime import datetime
+
+class FancyPDF(FPDF, HTMLMixin):
+    def __init__(self):
+        super().__init__()
+        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+
+        # Fallback for Render
+        if not os.path.exists(font_dir):
+            font_dir = "/opt/render/project/src/fonts"
+
+        # Load Unicode fonts
+        self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
+        self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
+        self.add_font("DejaVu", "I", os.path.join(font_dir, "DejaVuSans-Oblique.ttf"), uni=True)
+        self.set_font("DejaVu", "", 12)
+
 @app.get("/download_pdf/{trip_id}")
 def download_pdf(trip_id: int):
     conn = get_connection()
@@ -1318,78 +1339,89 @@ def download_pdf(trip_id: int):
 
     trip_name, total_expense, total_members, per_head_cost, family_summary, suggested, created_at = record
 
-    # --- Create PDF
-    pdf = PDFUnicode()
+    pdf = FancyPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # --- Header
-    pdf.set_font("DejaVu", "B", 16)
-    pdf.cell_unicode(0, 10, f"🧾 Trip Settlement Report — {trip_name}", ln=True, align="C")
+    # --- HTML report content
+    html = f"""
+    <h1 style="color:#2b6cb0;">🧾 Trip Settlement Report — {trip_name}</h1>
+    <p><b>Generated on:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}<br>
+    <b>Settlement Date:</b> {created_at.strftime('%Y-%m-%d %H:%M')}<br>
+    <b>💰 Total Expense:</b> ₹{total_expense} |
+    <b>Per Head:</b> ₹{per_head_cost}<br>
+    <b>👨‍👩‍👧 Total Members:</b> {total_members}</p>
 
-    pdf.set_font("DejaVu", "", 12)
-    pdf.cell_unicode(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell_unicode(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell_unicode(0, 8, f"💰 Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
-    pdf.cell_unicode(0, 8, f"👨‍👩‍👧 Members: {total_members}", ln=True)
-    pdf.ln(5)
-    pdf.set_draw_color(180, 180, 180)
-    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-    pdf.ln(8)
+    <hr>
+    <h3 style="color:#2f855a;">📊 Family Settlement Summary</h3>
+    <table border="1" width="100%" align="center" style="border-collapse:collapse;">
+    <thead>
+      <tr style="background-color:#e2e8f0;">
+        <th width="25%">Family</th>
+        <th width="15%">Spent</th>
+        <th width="15%">Due</th>
+        <th width="15%">Adjusted</th>
+        <th width="30%">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+    """
 
-    # --- Family Summary Table
-    pdf.set_font("DejaVu", "B", 12)
-    pdf.cell_unicode(0, 10, "📊 Family Settlement Summary", ln=True)
-
-    pdf.set_font("DejaVu", "B", 11)
-    pdf.cell_unicode(60, 8, "Family", 1)
-    pdf.cell_unicode(30, 8, "Spent", 1)
-    pdf.cell_unicode(30, 8, "Due", 1)
-    pdf.cell_unicode(30, 8, "Adjusted", 1)
-    pdf.cell_unicode(30, 8, "Status", 1, ln=True)
-
-    pdf.set_font("DejaVu", "", 11)
     for f in family_summary:
-        pdf.cell_unicode(60, 8, f.get("family_name", ""), 1)
-        pdf.cell_unicode(30, 8, f"₹{f.get('total_spent', 0)}", 1)
-        pdf.cell_unicode(30, 8, f"₹{f.get('due_amount', 0)}", 1)
-        pdf.cell_unicode(30, 8, f"₹{f.get('adjusted_balance', 0)}", 1)
-
         status = "✅ Settled" if f["adjusted_balance"] == 0 else (
             "💰 To Receive" if f["adjusted_balance"] > 0 else "💸 To Pay"
         )
-        pdf.cell_unicode(30, 8, status, 1, ln=True)
+        bg_color = "#fefcbf" if "To Pay" in status else "#c6f6d5" if "To Receive" in status else "#e2e8f0"
+        html += f"""
+        <tr style="background-color:{bg_color};">
+          <td>{f['family_name']}</td>
+          <td>₹{f['total_spent']}</td>
+          <td>₹{f['due_amount']}</td>
+          <td>₹{f['adjusted_balance']}</td>
+          <td>{status}</td>
+        </tr>
+        """
 
-    # --- Suggested Settlements
-    pdf.ln(10)
-    pdf.set_font("DejaVu", "B", 12)
-    pdf.cell_unicode(0, 10, "💸 Suggested Settlements (Who Pays Whom)", ln=True)
-    pdf.set_font("DejaVu", "", 11)
+    html += """
+    </tbody></table>
+    <br>
+    <h3 style="color:#d53f8c;">💸 Suggested Settlements (Who Pays Whom)</h3>
+    """
 
     if suggested:
+        html += "<ul>"
         for s in suggested:
-            pdf.cell_unicode(0, 8, f"{s['from']} → {s['to']} : ₹{s['amount']}", ln=True)
+            html += f"<li>{s['from']} → {s['to']}: <b>₹{s['amount']}</b></li>"
+        html += "</ul>"
     else:
-        pdf.cell_unicode(0, 8, "✅ All accounts settled!", ln=True)
+        html += "<p style='color:green;'>✅ All accounts are settled!</p>"
 
-    # --- QR Code
-    pdf.ln(10)
-    qr_data = f"https://yourdomain.com/trips/{trip_id}/settlement"
+    html += f"""
+    <br>
+    <hr>
+    <p><i>🏁 Generated automatically from ExpenseTracker system — Trip #{trip_id}</i></p>
+    """
+
+    pdf.write_html(html)
+
+    # --- Add QR Code
+    qr_data = f"https://trip-expense-backend.onrender.com//trips/{trip_id}/settlement"
     qr_img = qrcode.make(qr_data)
     qr_path = f"/tmp/settlement_{trip_id}.png"
     qr_img.save(qr_path)
-    pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
-    pdf.ln(35)
-    pdf.set_font("DejaVu", "I", 9)
-    pdf.cell_unicode(0, 10, f"📱 Scan QR to view trip #{trip_id} online", ln=True, align="R")
+    pdf.image(qr_path, x=160, y=pdf.get_y() + 5, w=30)
+    pdf.set_y(pdf.get_y() + 40)
+    pdf.set_font("DejaVu", "I", 10)
+    pdf.cell(0, 10, f"📱 Scan QR to view trip #{trip_id} online", align="R")
 
-    # --- Save PDF
+    # --- Save file
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
     pdf.output(file_path)
-    print(f"✅ PDF generated for trip {trip_id}: {file_path}")
+    print(f"✅ PDF generated with color + emojis: {file_path}")
 
     return FileResponse(
         path=file_path,
         filename=f"Trip_{trip_id}_Settlement_Report.pdf",
         media_type="application/pdf"
     )
+
