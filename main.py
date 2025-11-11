@@ -1298,16 +1298,20 @@ import qrcode
 import os
 from datetime import datetime
 
-class FancyPDF(FPDF, HTMLMixin):
+from fpdf import FPDF
+from fastapi.responses import FileResponse
+import qrcode
+import os
+from datetime import datetime
+
+class FancyPDF(FPDF):
     def __init__(self):
         super().__init__()
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
-
-        # Fallback for Render
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
 
-        # Load Unicode fonts
+        # Load fonts (Unicode-capable)
         self.add_font("DejaVu", "", os.path.join(font_dir, "DejaVuSans.ttf"), uni=True)
         self.add_font("DejaVu", "B", os.path.join(font_dir, "DejaVuSans-Bold.ttf"), uni=True)
         self.add_font("DejaVu", "I", os.path.join(font_dir, "DejaVuSans-Oblique.ttf"), uni=True)
@@ -1329,7 +1333,6 @@ def download_pdf(trip_id: int):
         ORDER BY v.created_at DESC
         LIMIT 1;
     """, (trip_id,))
-
     record = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -1343,85 +1346,94 @@ def download_pdf(trip_id: int):
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # --- HTML report content
-    html = f"""
-    <h1 style="color:#2b6cb0;">🧾 Trip Settlement Report — {trip_name}</h1>
-    <p><b>Generated on:</b> {datetime.now().strftime('%Y-%m-%d %H:%M')}<br>
-    <b>Settlement Date:</b> {created_at.strftime('%Y-%m-%d %H:%M')}<br>
-    <b>💰 Total Expense:</b> ₹{total_expense} |
-    <b>Per Head:</b> ₹{per_head_cost}<br>
-    <b>👨‍👩‍👧 Total Members:</b> {total_members}</p>
+    # --- Header
+    pdf.set_font("DejaVu", "B", 18)
+    pdf.set_text_color(40, 80, 160)
+    pdf.cell(0, 12, f"🧾 Trip Settlement Report — {trip_name or 'Untitled Trip'}", ln=True, align="C")
 
-    <hr>
-    <h3 style="color:#2f855a;">📊 Family Settlement Summary</h3>
-    <table border="1" width="100%" align="center" style="border-collapse:collapse;">
-    <thead>
-      <tr style="background-color:#e2e8f0;">
-        <th width="25%">Family</th>
-        <th width="15%">Spent</th>
-        <th width="15%">Due</th>
-        <th width="15%">Adjusted</th>
-        <th width="30%">Status</th>
-      </tr>
-    </thead>
-    <tbody>
-    """
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("DejaVu", "", 12)
+    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell(0, 8, f"💰 Total Expense: ₹{total_expense}   |   Per Head: ₹{per_head_cost}", ln=True)
+    pdf.cell(0, 8, f"👨‍👩‍👧 Members: {total_members}", ln=True)
+    pdf.ln(5)
+    pdf.set_draw_color(180, 180, 180)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(8)
 
+    # --- Family Summary
+    pdf.set_font("DejaVu", "B", 14)
+    pdf.set_text_color(0, 100, 0)
+    pdf.cell(0, 10, "📊 Family Settlement Summary", ln=True)
+    pdf.set_text_color(0, 0, 0)
+
+    pdf.set_font("DejaVu", "B", 11)
+    headers = ["Family", "Spent", "Due", "Adjusted", "Status"]
+    col_widths = [50, 30, 30, 30, 40]
+
+    for header, width in zip(headers, col_widths):
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(width, 8, header, 1, 0, "C", fill=True)
+    pdf.ln(8)
+
+    pdf.set_font("DejaVu", "", 11)
     for f in family_summary:
-        status = "✅ Settled" if f["adjusted_balance"] == 0 else (
-            "💰 To Receive" if f["adjusted_balance"] > 0 else "💸 To Pay"
+        adjusted = f.get("adjusted_balance", 0)
+        status = "✅ Settled" if adjusted == 0 else (
+            "💰 To Receive" if adjusted > 0 else "💸 To Pay"
         )
-        bg_color = "#fefcbf" if "To Pay" in status else "#c6f6d5" if "To Receive" in status else "#e2e8f0"
-        html += f"""
-        <tr style="background-color:{bg_color};">
-          <td>{f['family_name']}</td>
-          <td>₹{f['total_spent']}</td>
-          <td>₹{f['due_amount']}</td>
-          <td>₹{f['adjusted_balance']}</td>
-          <td>{status}</td>
-        </tr>
-        """
+        if "Receive" in status:
+            pdf.set_fill_color(220, 255, 220)
+        elif "Pay" in status:
+            pdf.set_fill_color(255, 240, 240)
+        else:
+            pdf.set_fill_color(240, 240, 240)
 
-    html += """
-    </tbody></table>
-    <br>
-    <h3 style="color:#d53f8c;">💸 Suggested Settlements (Who Pays Whom)</h3>
-    """
+        pdf.cell(50, 8, f.get("family_name", ""), 1, 0, "L", fill=True)
+        pdf.cell(30, 8, f"₹{f.get('total_spent', 0)}", 1, 0, "R", fill=True)
+        pdf.cell(30, 8, f"₹{f.get('due_amount', 0)}", 1, 0, "R", fill=True)
+        pdf.cell(30, 8, f"₹{adjusted}", 1, 0, "R", fill=True)
+        pdf.cell(40, 8, status, 1, 1, "C", fill=True)
+
+    # --- Suggested Settlements
+    pdf.ln(10)
+    pdf.set_font("DejaVu", "B", 13)
+    pdf.set_text_color(180, 0, 90)
+    pdf.cell(0, 10, "💸 Suggested Settlements (Who Pays Whom)", ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("DejaVu", "", 11)
 
     if suggested:
-        html += "<ul>"
         for s in suggested:
-            html += f"<li>{s['from']} → {s['to']}: <b>₹{s['amount']}</b></li>"
-        html += "</ul>"
+            pdf.cell(0, 8, f"{s['from']} → {s['to']} : ₹{s['amount']}", ln=True)
     else:
-        html += "<p style='color:green;'>✅ All accounts are settled!</p>"
+        pdf.set_text_color(0, 128, 0)
+        pdf.cell(0, 8, "✅ All accounts are settled!", ln=True)
+        pdf.set_text_color(0, 0, 0)
 
-    html += f"""
-    <br>
-    <hr>
-    <p><i>🏁 Generated automatically from ExpenseTracker system — Trip #{trip_id}</i></p>
-    """
-
-    pdf.write_html(html)
-
-    # --- Add QR Code
-    qr_data = f"https://trip-expense-backend.onrender.com//trips/{trip_id}/settlement"
+    # --- QR Code
+    qr_data = f"https://yourdomain.com/trips/{trip_id}/settlement"
     qr_img = qrcode.make(qr_data)
     qr_path = f"/tmp/settlement_{trip_id}.png"
     qr_img.save(qr_path)
-    pdf.image(qr_path, x=160, y=pdf.get_y() + 5, w=30)
-    pdf.set_y(pdf.get_y() + 40)
-    pdf.set_font("DejaVu", "I", 10)
-    pdf.cell(0, 10, f"📱 Scan QR to view trip #{trip_id} online", align="R")
+    pdf.ln(15)
+    x_pos = pdf.get_x() + 140
+    y_pos = pdf.get_y()
+    pdf.image(qr_path, x=x_pos, y=y_pos, w=40)
+    pdf.set_y(y_pos + 42)
+    pdf.set_font("DejaVu", "I", 9)
+    pdf.cell(0, 10, f"📱 Scan QR to view trip #{trip_id} online", ln=True, align="R")
 
-    # --- Save file
+    # --- Save
     file_path = f"/tmp/trip_{trip_id}_settlement.pdf"
     pdf.output(file_path)
-    print(f"✅ PDF generated with color + emojis: {file_path}")
+    print(f"✅ PDF generated with emojis, colors, and proper QR: {file_path}")
 
     return FileResponse(
         path=file_path,
         filename=f"Trip_{trip_id}_Settlement_Report.pdf",
         media_type="application/pdf"
     )
+
 
