@@ -1211,35 +1211,91 @@ def generate_stay_settlement_report(trip_id: int, format: str = "pdf"):
 import os
 from fpdf import FPDF
 
+import os
+from fpdf import FPDF
+
 class PDFUnicode(FPDF):
     def __init__(self):
         super().__init__()
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
 
+        # Fallback for Render deployments
         if not os.path.exists(font_dir):
             font_dir = "/opt/render/project/src/fonts"
 
         print(f"🟢 Loading fonts from: {font_dir}")
 
-        def try_add_font(name, style, file):
-            path = os.path.join(font_dir, file)
-            if os.path.exists(path):
-                self.add_font("DejaVu", style, path, uni=True)
-                print(f"✅ Loaded font: {file}")
-            else:
-                print(f"⚠️ Font not found: {file}")
+        # Load fonts safely
+        self._load_font("DejaVuSans.ttf", "")
+        self._load_font("DejaVuSans-Bold.ttf", "B")
+        self._load_font("DejaVuSans-Oblique.ttf", "I")
 
-        try_add_font("DejaVu", "", "DejaVuSans.ttf")
-        try_add_font("DejaVu", "B", "DejaVuSans-Bold.ttf")
-        try_add_font("DejaVu", "I", "DejaVuSans-Oblique.ttf")  # may be missing
+    def _load_font(self, filename, style):
+        """Load a specific font file if it exists."""
+        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+        if not os.path.exists(font_dir):
+            font_dir = "/opt/render/project/src/fonts"
+
+        path = os.path.join(font_dir, filename)
+        if os.path.exists(path):
+            try:
+                self.add_font("DejaVu", style, path, uni=True)
+                print(f"✅ Loaded font: {filename}")
+            except Exception as e:
+                print(f"⚠️ Could not load {filename}: {e}")
+        else:
+            print(f"⚠️ Font file not found: {path}")
 
     def safe_set_font(self, family="DejaVu", style="", size=10):
-        """Safely use font even if a variant (like Italic) is missing."""
+        """Set a font safely, fallback to normal if variant missing."""
         try:
             self.set_font(family, style, size)
         except Exception as e:
-            print(f"⚠️ Font {family}{style} not found, using regular: {e}")
+            print(f"⚠️ Font variant {family}{style} missing, fallback: {e}")
             self.set_font(family, "", size)
+
+    def write_safe(self, h, txt):
+        """Write text after replacing unsupported emojis."""
+        clean_txt = self._replace_emojis(txt)
+        try:
+            self.write(h, clean_txt)
+        except Exception as e:
+            print(f"⚠️ Failed to write text '{txt}': {e}")
+            self.write(h, clean_txt.encode('utf-8', 'ignore').decode('utf-8'))
+
+    def cell_safe(self, w, h, txt, border=0, ln=0, align='', fill=False, link=''):
+        """Draw cell text safely (emoji-cleaned)."""
+        clean_txt = self._replace_emojis(txt)
+        try:
+            self.cell(w, h, clean_txt, border, ln, align, fill, link)
+        except Exception as e:
+            print(f"⚠️ Failed to draw cell '{txt}': {e}")
+            self.cell(w, h, clean_txt.encode('utf-8', 'ignore').decode('utf-8'), border, ln, align, fill, link)
+
+    def _replace_emojis(self, text):
+        """Convert unsupported emojis into readable text equivalents."""
+        if not text:
+            return text
+
+        emoji_map = {
+            "💰": "[Expense]",
+            "💸": "[Payment]",
+            "✅": "[Settled]",
+            "📊": "[Summary]",
+            "🧾": "[Report]",
+            "🧮": "[Calculation]",
+            "⚙️": "[Config]",
+            "▶": "→",
+            "🔧": "[Adjust]",
+            "🏁": "[Final]",
+            "📦": "[Archive]",
+            "ℹ️": "[Info]",
+        }
+
+        for emoji, replacement in emoji_map.items():
+            text = text.replace(emoji, replacement)
+
+        return text
 
 
 @app.get("/download_pdf/{trip_id}")
