@@ -67,14 +67,32 @@ async def log_requests(request: Request, call_next):
 # ================================================
 # 🏁 STARTUP + HEALTH CHECK
 # ================================================
-@app.on_event("startup")
-def on_startup():
-    initialize_database()
-
+from fastapi import Response
 
 @app.get("/")
 def home():
     return {"message": "✅ Expense Tracker Backend Running Now"}
+
+@app.head("/")
+def home_head():
+    return Response(status_code=200)
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+@app.on_event("startup")
+def on_startup():
+    # your initialize_database() as before
+    initialize_database()
+
+    # DEBUG: print routes so we see what's actually live
+    print("🔎 Registered routes:")
+    for r in app.router.routes:
+        try:
+            print(f"  • {','.join(sorted(r.methods))} {r.path}")
+        except Exception:
+            print(f"  • {r}")
 
 
 # ================================================
