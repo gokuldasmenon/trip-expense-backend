@@ -119,7 +119,9 @@ def generate_settlement_pdf(trip_id: int):
 
     # QR Code
     pdf.ln(10)
-    qr_data = f"https://yourdomain.com/trips/{trip_id}/settlement"
+    frontend_base_url = "https://trip-expense-backend.onrender.com/"
+    mode = "stay" if "stay" in pdf.title.lower() else "trip"
+    qr_data = f"{frontend_base_url}/trip/{trip_id}"
     qr_img = qrcode.make(qr_data)
     temp_dir = tempfile.gettempdir()
     qr_path = os.path.join(temp_dir, f"trip_{trip_id}_qr.png")
