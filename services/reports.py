@@ -77,12 +77,14 @@ def generate_settlement_pdf(trip_id: int):
     pdf = UnicodePDF()
     pdf.add_page()
     pdf.set_font("DejaVu", "B", 16)
-    pdf.cell(0, 10, f"Trip Settlement Report — {trip_name or 'Untitled Trip'}", ln=True, align="C")
+    pdf.set_fill_color(230, 240, 255)
+    pdf.cell(0, 10, f"🧾 Trip Settlement Report — {trip_name or 'Untitled Trip'}",
+            ln=True, align="C", fill=True)
 
     pdf.set_font("DejaVu", "", 12)
-    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell(0, 8, f"Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
-    pdf.cell(0, 8, f"Total Expense: ₹{total_expense} | Per Head: ₹{per_head_cost}", ln=True)
+    pdf.cell(0, 8, f"📅 Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell(0, 8, f"🕒 Settlement Date: {created_at.strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.cell(0, 8, f"💰 Total Expense: ₹{total_expense} | 👥 Members: {total_members} | 💵 Per Head: ₹{per_head_cost}", ln=True)
     pdf.cell(0, 8, f"Total Members: {total_members}", ln=True)
     pdf.ln(8)
 
@@ -120,14 +122,19 @@ def generate_settlement_pdf(trip_id: int):
     # QR Code
     pdf.ln(10)
     frontend_base_url = "https://trip-expense-backend.onrender.com/"
-    # mode = "stay" if "stay" in pdf.title.lower() else "trip"
     qr_data = f"{frontend_base_url}/trip/{trip_id}"
+
+    # ✅ Generate QR safely
     qr_img = qrcode.make(qr_data)
     temp_dir = tempfile.gettempdir()
     qr_path = os.path.join(temp_dir, f"trip_{trip_id}_qr.png")
     qr_img.save(qr_path)
-    pdf.image(qr_path, x=160, y=pdf.get_y(), w=30)
-    pdf.ln(35)
+
+    # ✅ Place QR clearly in the bottom-right corner
+    y_position = pdf.get_y() + 5
+    pdf.image(qr_path, x=pdf.w - 50, y=y_position, w=40)
+              
+    pdf.ln(45)
     pdf.set_font("DejaVu", "I", 9)
     pdf.cell(0, 10, f"Scan QR to view trip #{trip_id}", ln=True, align="R")
 
