@@ -47,13 +47,21 @@ def generate_settlement_pdf(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT trip_name, total_expense, total_members, per_head_cost,
-               family_summary, suggested_settlements, created_at
-        FROM v_latest_stay_settlement_snapshot
-        WHERE trip_id = %s
-        ORDER BY created_at DESC
+        SELECT 
+            COALESCE(t.name, CONCAT('Trip #', v.trip_id)) AS trip_name,
+            v.total_expense,
+            v.total_members,
+            v.per_head_cost,
+            v.family_summary,
+            v.suggested_settlements,
+            v.created_at
+        FROM v_latest_stay_settlement_snapshot v
+        LEFT JOIN trips t ON v.trip_id = t.id
+        WHERE v.trip_id = %s
+        ORDER BY v.created_at DESC
         LIMIT 1;
     """, (trip_id,))
+
     record = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -62,6 +70,8 @@ def generate_settlement_pdf(trip_id: int):
         raise ValueError(f"No settlement snapshot found for trip {trip_id}")
 
     trip_name, total_expense, total_members, per_head_cost, family_summary, suggested, created_at = record
+    trip_name = trip_name or f"Trip #{trip_id}"
+
 
     # PDF creation
     pdf = UnicodePDF()

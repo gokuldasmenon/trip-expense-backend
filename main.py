@@ -1093,13 +1093,13 @@ def settlement_snapshot(trip_id: int):
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT t.trip_name,
-            v.total_expense,
-            v.total_members,
-            v.per_head_cost,
-            v.family_summary,
-            v.suggested_settlements,
-            v.created_at
+        SELECT  t.name AS trip_name,
+                v.total_expense,
+                v.total_members,
+                v.per_head_cost,
+                v.family_summary,
+                v.suggested_settlements,
+                v.created_at
         FROM v_latest_stay_settlement_snapshot v
         LEFT JOIN trips t ON v.trip_id = t.id
         WHERE v.trip_id = %s
