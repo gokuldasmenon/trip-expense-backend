@@ -1084,53 +1084,24 @@ def share_pdf(trip_id: int):
 
 
 @app.get("/settlement_snapshot/{trip_id}")
-def settlement_snapshot(trip_id: int):
+def settlement_snapshot(trip_id: int, mode: str = "TRIP"):
     """
-    Returns the latest settlement snapshot for a trip.
-    This is used by Flutter's ReportPage to show summary info.
+    Returns REAL settlement data exactly as seen on the Settlement page.
+    No more stale DB snapshots.
     """
-    conn = get_connection()
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT  t.name AS trip_name,
-                v.total_expense,
-                v.total_members,
-                v.per_head_cost,
-                v.family_summary,
-                v.suggested_settlements,
-                v.created_at
-        FROM v_latest_stay_settlement_snapshot v
-        LEFT JOIN trips t ON v.trip_id = t.id
-        WHERE v.trip_id = %s
-        ORDER BY v.created_at DESC
-        LIMIT 1;
-    """, (trip_id,))
+    print(f"📗 Generating LIVE snapshot for report (trip={trip_id}, mode={mode})")
 
-    record = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    # Call the same calculation used in the UI
+    data = unified_settlement_endpoint(
+        trip_id=trip_id,
+        mode=mode,
+        period=None,
+        record=False
+    )
 
-    if not record:
-        raise HTTPException(status_code=404, detail="No settlement snapshot found")
+    # Remove unnecessary keys before sending to Flutter
+    data.pop("message", None)
+    data.pop("recorded_settlement_id", None)
 
-    (
-        trip_name,
-        total_expense,
-        total_members,
-        per_head_cost,
-        family_summary,
-        suggested,
-        created_at,
-    ) = record
-
-    return {
-        "trip_id": trip_id,
-        "trip_name": trip_name,
-        "total_expense": total_expense,
-        "total_members": total_members,
-        "per_head_cost": per_head_cost,
-        "family_summary": family_summary,
-        "suggested_settlements": suggested,
-        "created_at": created_at.isoformat() if created_at else None,
-    }
+    return data
