@@ -1084,18 +1084,18 @@ def share_pdf(trip_id: int):
 
 
 @app.get("/settlement_snapshot/{trip_id}")
-def settlement_snapshot(trip_id: int, mode: str = "STAY"):
+def settlement_snapshot(trip_id: int):
     """
     Returns REAL settlement data exactly as seen on the Settlement page.
     No more stale DB snapshots.
     """
 
-    print(f"📗 Generating LIVE snapshot for report (trip={trip_id}, mode={mode})")
+    print(f"📗 Generating LIVE snapshot for report (trip={trip_id}, mode=STAY)")
 
     # Call the same calculation used in the UI
     data = unified_settlement_endpoint(
         trip_id=trip_id,
-        mode=mode,
+        mode="STAY",
         period=None,
         record=False
     )
