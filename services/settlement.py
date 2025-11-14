@@ -150,7 +150,47 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
         "transactions": transactions if transactions else "All accounts settled"
     }
 
+def get_trip_summary(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    # --- Trip info ---
+    cursor.execute("SELECT * FROM trips WHERE id = %s", (trip_id,))
+    trip = cursor.fetchone()
+    if not trip:
+        cursor.close()
+        conn.close()
+        return {"error": f"Trip with id {trip_id} not found"}
+
+    # --- Families ---
+    cursor.execute("""
+        SELECT id, family_name, members_count
+        FROM family_details
+        WHERE trip_id = %s
+    """, (trip_id,))
+    families = cursor.fetchall()
+
+    # --- Expenses ---
+    cursor.execute("""
+        SELECT e.expense_name, e.amount, e.date, f.family_name AS payer
+        FROM expenses e
+        JOIN family_details f ON e.payer_family_id = f.id
+        WHERE e.trip_id = %s
+        ORDER BY e.date ASC, e.id ASC
+    """, (trip_id,))
+    expenses = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    settlement_data = get_settlement(trip_id)
+
+    return {
+        "trip": trip,
+        "families": families,
+        "expenses": expenses,
+        "settlement": settlement_data
+    }
 # =========================
 # Fetch last STAY settlement
 # =========================
