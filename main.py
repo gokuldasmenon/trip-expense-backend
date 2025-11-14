@@ -1084,7 +1084,7 @@ def share_pdf(trip_id: int):
 
 
 @app.get("/settlement_snapshot/{trip_id}")
-def settlement_snapshot(trip_id: int, mode: str = "TRIP"):
+def settlement_snapshot(trip_id: int, mode: str = "STAY"):
     """
     Returns REAL settlement data exactly as seen on the Settlement page.
     No more stale DB snapshots.
