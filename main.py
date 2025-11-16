@@ -722,13 +722,152 @@ def delete_settlement_transaction(txn_id: int):
 
     return {"message": "Transaction deleted successfully."}
 
-
+# ==========================================
+# 📜 VIEW CARRY-FORWARD HISTORY FOR A TRIP
+# ==========================================
+# ==========================================
+# 📜 VIEW CARRY-FORWARD HISTORY (OPTIONAL FAMILY FILTER)
+# ==========================================
 from fastapi import Query
 
+@app.get("/stay_carry_forward_log/{trip_id}")
+def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
+    """
+    Retrieves carry-forward log(s) for a Stay trip.
+    Optionally filters by family_id.
+    Includes trip name, stay period, and settlement dates.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        base_query = """
+            SELECT 
+                l.id,
+                l.trip_id,
+                t.name AS trip_name,
+                ps.id AS previous_settlement_id,
+                ps.period_start AS previous_period_start,
+                ps.period_end AS previous_period_end,
+                ps.created_at AS previous_settlement_date,
+                ns.id AS new_settlement_id,
+                ns.period_start AS new_period_start,
+                ns.period_end AS new_period_end,
+                ns.created_at AS new_settlement_date,
+                l.family_id,
+                f.family_name,
+                l.previous_balance,
+                l.new_balance,
+                l.delta,
+                l.created_at AS log_created_at
+            FROM stay_carry_forward_log l
+            JOIN family_details f ON l.family_id = f.id
+            JOIN trips t ON l.trip_id = t.id
+            LEFT JOIN stay_settlements ps ON l.previous_settlement_id = ps.id
+            LEFT JOIN stay_settlements ns ON l.new_settlement_id = ns.id
+            WHERE l.trip_id = %s
+        """
+
+        params = [trip_id]
+
+        if family_id:
+            base_query += " AND l.family_id = %s"
+            params.append(family_id)
+
+        base_query += " ORDER BY l.created_at DESC;"
+
+        print(f"📘 Fetching carry-forward logs for trip={trip_id}, family={family_id or 'ALL'}")
+
+        cursor.execute(base_query, params)
+        records = cursor.fetchall()
+        conn.close()
+
+        if not records:
+            msg = f"No carry-forward history found for trip {trip_id}"
+            if family_id:
+                msg += f" and family {family_id}"
+            return {"trip_id": trip_id, "family_id": family_id, "message": msg}
+
+        # ✅ Summary metadata
+        trip_name = records[0]["trip_name"] if records else None
+        summary = {
+            "trip_id": trip_id,
+            "trip_name": trip_name,
+            "family_filter": family_id,
+            "total_records": len(records),
+            "latest_settlement_date": records[0]["new_settlement_date"] if records else None
+        }
+
+        return {
+            "summary": summary,
+            "carry_forward_history": records
+        }
+
+    except Exception as e:
+        import traceback
+        print("❌ Error retrieving carry-forward log:", e)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to fetch carry-forward log: {e}")
+
+@app.get("/stay_carry_forward_logs/{trip_id}")
+def list_stay_carry_forward_logs(trip_id: int):
+    """
+    Returns all carry-forward log entries for a trip,
+    enriched with family names and stay period (start → end).
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT 
+            log.id,
+            log.trip_id,
+            log.previous_settlement_id,
+            log.new_settlement_id,
+            log.family_id,
+            f.family_name,
+            log.previous_balance,
+            log.new_balance,
+            log.delta,
+            log.created_at,
+            ss.period_start,
+            ss.period_end
+        FROM stay_carry_forward_log log
+        LEFT JOIN family_details f ON log.family_id = f.id
+        LEFT JOIN stay_settlements ss ON log.new_settlement_id = ss.id
+        WHERE log.trip_id = %s
+        ORDER BY log.created_at DESC;
+    """, (trip_id,))
+
+    logs = cursor.fetchall()
+    conn.close()
+
+    return {"trip_id": trip_id, "logs": logs}
 
 
+@app.delete("/stay_carry_forward_log/{log_id}")
+def delete_stay_carry_forward_log(log_id: int):
+    """
+    Deletes a single carry-forward log entry.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stay_carry_forward_log WHERE id = %s;", (log_id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"Carry-forward log {log_id} deleted successfully."}
 
-
+@app.delete("/stay_carry_forward_logs/clear/{trip_id}")
+def clear_all_stay_carry_forward_logs(trip_id: int):
+    """
+    Clears all carry-forward logs for a given trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM stay_carry_forward_log WHERE trip_id = %s;", (trip_id,))
+    conn.commit()
+    conn.close()
+    return {"message": f"All carry-forward logs cleared for trip {trip_id}."}
 
 @app.get("/stay_transactions/{settlement_id}")
 def get_stay_transactions(settlement_id: int):
