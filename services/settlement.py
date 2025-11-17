@@ -177,6 +177,21 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
             })
             owed     -= payment
             c["bal"] -= payment
+    # --- Step 7: Fetch settlement transactions (TRIP mode)
+    cursor.execute("""
+        SELECT t.id, 
+            f1.family_name AS from_family,
+            f2.family_name AS to_family,
+            t.amount, 
+            t.transaction_date,
+            t.remarks
+        FROM settlement_transactions t
+        LEFT JOIN family_details f1 ON t.from_family_id = f1.id
+        LEFT JOIN family_details f2 ON t.to_family_id = f2.id
+        WHERE t.trip_id = %s
+        ORDER BY t.id DESC
+    """, (trip_id,))
+    active_transactions = cursor.fetchall()
 
     # --- Step 7: Round values for output only ---
     for f in family_results:
@@ -197,6 +212,7 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
         "transactions": transactions if transactions else "All accounts settled",
         # also expose a proper list for new UIs if you want:
         "suggested": transactions,
+        "active_transactions": active_transactions
     }
 
 
