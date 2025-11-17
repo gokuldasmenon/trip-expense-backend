@@ -32,7 +32,7 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Optional date range filter for stay settlements
+    # Optional date filter (for future use, TRIP uses full trip normally)
     date_filter = ""
     if start_date and end_date:
         date_filter = "AND e.date BETWEEN %s AND %s"
@@ -40,30 +40,29 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
     else:
         date_params = (trip_id,)
 
-    # --- Step 1: Get all families ---
+    # --- Step 1: Get families ---
     cursor.execute("""
         SELECT id, family_name, members_count
         FROM family_details
         WHERE trip_id = %s
     """, (trip_id,))
-    families = cursor.fetchall()
+    families_rows = cursor.fetchall()
 
-    if not families:
+    if not families_rows:
         cursor.close()
         conn.close()
         return {"message": "No families found for this trip."}
 
-    family_ids = [f["id"] for f in families]
-    family_names = {f["id"]: f["family_name"] for f in families}
-    family_members = {f["id"]: f["members_count"] for f in families}
+    family_ids = [f["id"] for f in families_rows]
+    family_names = {f["id"]: f["family_name"] for f in families_rows}
+    family_members = {f["id"]: f["members_count"] for f in families_rows}
 
-    # --- Step 2: Get expenses (with optional date filter) ---
-    query = f"""
+    # --- Step 2: Expenses (optionally filtered) ---
+    cursor.execute(f"""
         SELECT payer_family_id, amount
         FROM expenses e
         WHERE trip_id = %s {date_filter}
-    """
-    cursor.execute(query, date_params)
+    """, date_params)
     expenses = cursor.fetchall()
 
     expense_balance = {fid: 0.0 for fid in family_ids}
@@ -76,46 +75,48 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
             expense_balance[payer_id] += amt
             total_expense += amt
 
-    # --- Step 3: Compute per-head cost ---
+    # --- Step 3: Per-head, expected share ---
     total_members = sum(family_members.values())
     per_head_cost = total_expense / total_members if total_members > 0 else 0.0
     expected_share = {fid: family_members[fid] * per_head_cost for fid in family_ids}
 
-    # --- Step 4: Get advances ---
+    # --- Step 4: Advances (giver = +, taker = -) ---
     cursor.execute("""
         SELECT payer_family_id, receiver_family_id, amount
         FROM advances
         WHERE trip_id = %s
     """, (trip_id,))
-    advances = cursor.fetchall()
+    advances_rows = cursor.fetchall()
 
     advance_balance = {fid: 0.0 for fid in family_ids}
-    for a in advances:
+    for a in advances_rows:
         payer_id = a["payer_family_id"]
         receiver_id = a["receiver_family_id"]
         amt = float(a["amount"])
         if payer_id in advance_balance:
-            advance_balance[payer_id] += amt
+            advance_balance[payer_id] += amt   # gave → credit
         if receiver_id in advance_balance:
-            advance_balance[receiver_id] -= amt
+            advance_balance[receiver_id] -= amt  # took → debit
 
-    # --- Step 5: Compute balances ---
+    # --- Step 5: Raw balances (before settlement payments) ---
     family_results = []
     for fid in family_ids:
-        paid = expense_balance.get(fid, 0.0)
-        owed = expected_share.get(fid, 0.0)
-        adv = advance_balance.get(fid, 0.0)
-        net = paid - owed + adv
+        paid = float(expense_balance.get(fid, 0.0))
+        owed = float(expected_share.get(fid, 0.0))
+        adv  = float(advance_balance.get(fid, 0.0))
+        net  = paid - owed + adv   # RAW/NET
+
         family_results.append({
             "family_id": fid,
             "family_name": family_names[fid],
             "members_count": family_members[fid],
-            "total_spent": round(paid),
-            "raw_balance": round(net),
-            "adjusted_balance": fam.get("adjusted_balance", round(net))
-            
+            "total_spent": paid,       # will round later for output
+            "raw_balance": net,        # before settlement payments
+            "balance": net,            # used internally, will keep raw
+            # adjusted_balance will be added after applying settlement txns
         })
-    # --- Step 5B: Apply Settlement Transactions (TRIP Mode Adjustments) ---
+
+    # --- Step 5B: Apply Settlement Transactions (TRIP mode adjustments) ---
     cursor.execute("""
         SELECT from_family_id, to_family_id, amount
         FROM settlement_transactions
@@ -125,42 +126,64 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
 
     txn_adjust = {fid: 0.0 for fid in family_ids}
     for t in txn_rows:
-        txn_adjust[t["from_family_id"]] += float(t["amount"])
-        txn_adjust[t["to_family_id"]] -= float(t["amount"])
+        f_from = t["from_family_id"]
+        f_to   = t["to_family_id"]
+        amt    = float(t["amount"])
+        # from pays → owes less → balance moves toward zero (increase)
+        txn_adjust[f_from] = txn_adjust.get(f_from, 0.0) + amt
+        # to receives → should receive less → balance moves toward zero (decrease)
+        txn_adjust[f_to] = txn_adjust.get(f_to, 0.0) - amt
 
-    # Apply adjustments
+    # apply adjustments
     for fam in family_results:
         fid = fam["family_id"]
-        fam["adjusted_balance"] = round(fam["balance"] - txn_adjust[fid])
-   
+        adj = txn_adjust.get(fid, 0.0)
+        fam["adjusted_balance"] = fam["balance"] + adj  # balance is net
 
-    # --- Step 6: Transactions ---
-    debtors = [f.copy() for f in family_results if f["adjusted_balance"] < -0.5]
-    creditors = [f.copy() for f in family_results if f["adjusted_balance"] > 0.5]
-
-    for d in debtors:
-        d["bal"] = abs(d["adjusted_balance"])
-    for c in creditors:
-        c["bal"] = c["adjusted_balance"]
+    # --- Step 6: Suggested settlements derived from adjusted_balance ---
+    # work on copies so we don't mutate family_results
+    debtors = [
+        {
+            "family_name": f["family_name"],
+            "bal": abs(f["adjusted_balance"])
+        }
+        for f in family_results
+        if f["adjusted_balance"] < -0.5  # owes
+    ]
+    creditors = [
+        {
+            "family_name": f["family_name"],
+            "bal": f["adjusted_balance"]
+        }
+        for f in family_results
+        if f["adjusted_balance"] > 0.5   # to receive
+    ]
 
     transactions = []
     for d in debtors:
         owed = d["bal"]
         for c in creditors:
-            if owed <= 0: break
-            if c["bal"] <= 0: continue
+            if owed <= 0:
+                break
+            if c["bal"] <= 0:
+                continue
             payment = min(owed, c["bal"])
+            if payment <= 0:
+                continue
             transactions.append({
                 "from": d["family_name"],
                 "to": c["family_name"],
                 "amount": round(payment)
             })
-            owed -= payment
+            owed     -= payment
             c["bal"] -= payment
 
-
+    # --- Step 7: Round values for output only ---
     for f in family_results:
-        f["balance"] = f["raw_balance"]
+        f["total_spent"]      = round(f["total_spent"])
+        f["raw_balance"]      = round(f["raw_balance"])
+        f["balance"]          = round(f["raw_balance"])  # keep raw as base
+        f["adjusted_balance"] = round(f.get("adjusted_balance", f["raw_balance"]))
 
     cursor.close()
     conn.close()
@@ -170,8 +193,12 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
         "total_members": total_members,
         "per_head_cost": round(per_head_cost),
         "families": family_results,
-        "transactions": transactions if transactions else "All accounts settled"
+        # keep legacy "transactions" for compatibility (trip-level suggestion)
+        "transactions": transactions if transactions else "All accounts settled",
+        # also expose a proper list for new UIs if you want:
+        "suggested": transactions,
     }
+
 
 def get_trip_summary(trip_id: int):
     conn = get_connection()
