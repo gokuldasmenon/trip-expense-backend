@@ -112,29 +112,52 @@ def get_settlement(trip_id: int, start_date: str = None, end_date: str = None, r
             "members_count": family_members[fid],
             "total_spent": round(paid),
             "raw_balance": round(net),
-            "balance": round(net)
+            "adjusted_balance": fam.get("adjusted_balance", round(net))
+            
         })
+    # --- Step 5B: Apply Settlement Transactions (TRIP Mode Adjustments) ---
+    cursor.execute("""
+        SELECT from_family_id, to_family_id, amount
+        FROM settlement_transactions
+        WHERE trip_id = %s
+    """, (trip_id,))
+    txn_rows = cursor.fetchall()
+
+    txn_adjust = {fid: 0.0 for fid in family_ids}
+    for t in txn_rows:
+        txn_adjust[t["from_family_id"]] += float(t["amount"])
+        txn_adjust[t["to_family_id"]] -= float(t["amount"])
+
+    # Apply adjustments
+    for fam in family_results:
+        fid = fam["family_id"]
+        fam["adjusted_balance"] = round(fam["balance"] - txn_adjust[fid])
+   
 
     # --- Step 6: Transactions ---
-    debtors = [f for f in family_results if f["balance"] < 0]
-    creditors = [f for f in family_results if f["balance"] > 0]
-    transactions = []
+    debtors = [f.copy() for f in family_results if f["adjusted_balance"] < -0.5]
+    creditors = [f.copy() for f in family_results if f["adjusted_balance"] > 0.5]
 
     for d in debtors:
-        owed = abs(d["balance"])
+        d["bal"] = abs(d["adjusted_balance"])
+    for c in creditors:
+        c["bal"] = c["adjusted_balance"]
+
+    transactions = []
+    for d in debtors:
+        owed = d["bal"]
         for c in creditors:
-            if owed <= 0:
-                break
-            if c["balance"] <= 0:
-                continue
-            payment = min(owed, c["balance"])
+            if owed <= 0: break
+            if c["bal"] <= 0: continue
+            payment = min(owed, c["bal"])
             transactions.append({
                 "from": d["family_name"],
                 "to": c["family_name"],
                 "amount": round(payment)
             })
             owed -= payment
-            c["balance"] -= payment
+            c["bal"] -= payment
+
 
     for f in family_results:
         f["balance"] = f["raw_balance"]
@@ -495,57 +518,6 @@ def calculate_stay_settlement(trip_id: int):
         "suggested": suggested,
     }
 
-
-# =====================================================
-# Settlement history snapshot (optional, safe no-op)
-# =====================================================
-def record_settlement_snapshot(trip_id, prev_settlement_id, new_settlement_id, mode, result_data, carry_forward_map):
-    """
-    Saves a full settlement snapshot for historical tracking, if table exists.
-    If table doesn't exist, logs and skips without error.
-    """
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-
-        # check table existence once
-        cur.execute("""
-            SELECT 1
-            FROM information_schema.tables
-            WHERE table_name = 'stay_settlement_history'
-            LIMIT 1;
-        """)
-        if cur.fetchone() is None:
-            print("ℹ️ [SNAPSHOT] Table stay_settlement_history not found — skipping snapshot.")
-            conn.close()
-            return
-
-        cur.execute("""
-            INSERT INTO stay_settlement_history (
-                trip_id, prev_settlement_id, new_settlement_id,
-                mode, total_expense, total_members, per_head_cost,
-                family_summary, suggested_settlements, settlement_transactions, carry_forward_data
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        """, (
-            trip_id,
-            prev_settlement_id,
-            new_settlement_id,
-            mode or "STAY",
-            result_data.get("total_expense", 0),
-            result_data.get("total_members", 0),
-            result_data.get("per_head_cost", 0),
-            json.dumps(result_data.get("families", [])),
-            json.dumps(result_data.get("suggested", [])),
-            json.dumps(result_data.get("active_transactions", [])),
-            json.dumps(carry_forward_map or {})
-        ))
-        conn.commit()
-        conn.close()
-        print(f"🧾 [SNAPSHOT] Settlement snapshot saved (trip={trip_id}, id={new_settlement_id}).")
-    except Exception as e:
-        # never break settlement flow due to snapshot
-        print(f"⚠️ [SNAPSHOT] Failed to record snapshot: {e}")
 
 
 # ======================================
