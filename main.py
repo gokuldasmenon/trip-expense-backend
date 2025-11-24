@@ -250,8 +250,8 @@ def add_trip(trip: TripIn):
             trip.name,
             trip.start_date,
             trip.trip_type,
-            getattr(trip, 'mode', 'TRIP'),            # default TRIP
-            getattr(trip, 'billing_cycle', None),     # optional for STAY
+            getattr(trip, 'mode', 'TRIP'),
+            getattr(trip, 'billing_cycle', None),
             access_code,
             getattr(trip, 'owner_name', 'User'),
             getattr(trip, 'owner_id', None),
@@ -260,11 +260,11 @@ def add_trip(trip: TripIn):
         new_trip = cursor.fetchone()
         conn.commit()
 
-        # Auto-register owner as member
+        # 👑 Auto-register owner as trip member
         cursor.execute("""
             INSERT INTO trip_members (trip_id, user_id, role)
             VALUES (%s, %s, 'owner')
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (trip_id, user_id) DO NOTHING
         """, (new_trip['id'], trip.owner_id))
         conn.commit()
 
@@ -279,6 +279,7 @@ def add_trip(trip: TripIn):
     finally:
         cursor.close()
         conn.close()
+
 
 
 
