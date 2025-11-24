@@ -330,6 +330,57 @@ def join_trip(access_code: str, user_id: int):
         cursor.close()
         conn.close()
 
+@app.post("/exit_trip/{trip_id}")
+def exit_trip(trip_id: int, user_id: int):
+    """
+    Exit a trip using trip_id + user_id.
+    User cannot exit if they are the owner.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        # 🔍 Check user exists
+        cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+        # 🔍 Verify membership + get role
+        cursor.execute("""
+            SELECT role FROM trip_members
+            WHERE trip_id = %s AND user_id = %s
+        """, (trip_id, user_id))
+        membership = cursor.fetchone()
+
+        if not membership:
+            raise HTTPException(status_code=400, detail="User not part of this trip")
+
+        # 🚫 Owners cannot exit (must archive/delete)
+        if membership["role"] == "owner":
+            raise HTTPException(status_code=403, detail="Owner cannot exit the trip")
+
+        # ❌ Remove membership
+        cursor.execute("""
+            DELETE FROM trip_members
+            WHERE trip_id = %s AND user_id = %s
+        """, (trip_id, user_id))
+
+        conn.commit()
+        print(f"DEBUG: User {user_id} exited trip {trip_id}")
+
+        return {"success": True, "message": "Exited the trip successfully"}
+
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ ERROR in exit_trip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.get("/trips/{user_id}")
 def get_trips_for_user_endpoint(user_id: int):
