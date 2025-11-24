@@ -466,7 +466,7 @@ def get_trip_members(trip_id: int):
 
         # 👥 Get members
         cursor.execute("""
-            SELECT tm.user_id AS id, u.name, u.mobile, tm.role
+            SELECT tm.user_id AS id, u.name, u.phone AS mobile, tm.role
             FROM trip_members tm
             JOIN users u ON u.id = tm.user_id
             WHERE tm.trip_id = %s
