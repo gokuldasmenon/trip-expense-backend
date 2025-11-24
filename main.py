@@ -433,6 +433,42 @@ def remove_member(trip_id: int, owner_id: int, member_id: int):
     finally:
         cursor.close()
         conn.close()
+@app.get("/trip_members/{trip_id}")
+def get_trip_members(trip_id: int):
+    """
+    Get all members of a trip with their role.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        # 🔍 Validate trip exists
+        cursor.execute("SELECT id, name FROM trips WHERE id = %s", (trip_id,))
+        trip = cursor.fetchone()
+        if not trip:
+            raise HTTPException(status_code=404, detail="Trip not found")
+
+        # 👥 Get members
+        cursor.execute("""
+            SELECT tm.user_id AS id, u.name, tm.role
+            FROM trip_members tm
+            JOIN users u ON u.id = tm.user_id
+            WHERE tm.trip_id = %s
+            ORDER BY tm.role DESC, u.name ASC
+        """, (trip_id,))
+
+        members = cursor.fetchall()
+
+        return {"trip_id": trip_id, "members": members}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ ERROR in get_trip_members: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.get("/trips/{user_id}")
 def get_trips_for_user_endpoint(user_id: int):
