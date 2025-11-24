@@ -381,6 +381,58 @@ def exit_trip(trip_id: int, user_id: int):
     finally:
         cursor.close()
         conn.close()
+@app.post("/remove_member/{trip_id}")
+def remove_member(trip_id: int, owner_id: int, member_id: int):
+    """
+    Owner removes another participant from the trip.
+    """
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    try:
+        # 🔍 Validate owner
+        cursor.execute("""
+            SELECT role FROM trip_members
+            WHERE trip_id = %s AND user_id = %s
+        """, (trip_id, owner_id))
+        owner = cursor.fetchone()
+
+        if not owner or owner["role"] != "owner":
+            raise HTTPException(status_code=403, detail="Only owner can remove participants")
+
+        # 🚫 Owner cannot remove themselves
+        if owner_id == member_id:
+            raise HTTPException(status_code=400, detail="Owner cannot remove themselves")
+
+        # 🔍 Check member
+        cursor.execute("""
+            SELECT role FROM trip_members
+            WHERE trip_id = %s AND user_id = %s
+        """, (trip_id, member_id))
+        member = cursor.fetchone()
+
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found in this trip")
+
+        # ❌ Remove member
+        cursor.execute("""
+            DELETE FROM trip_members
+            WHERE trip_id = %s AND user_id = %s
+        """, (trip_id, member_id))
+        conn.commit()
+
+        return {"success": True, "message": "Member removed successfully"}
+
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ ERROR in remove_member: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.get("/trips/{user_id}")
 def get_trips_for_user_endpoint(user_id: int):
