@@ -312,7 +312,7 @@ def calculate_stay_settlement(trip_id: int):
     """
     STAY mode settlement:
     - Per-head cost based on total members
-    - Net = previous_carry_forward + (period_spent - period_due)
+    - Net = previous_carry_forward + (period_spent - period_due) + advances
     - Adjusted = Net + sum(active settlement transactions only)
     - Suggested settlements derived from ADJUSTED
     - Internals use floats; round only for output & suggestions
@@ -335,7 +335,9 @@ def calculate_stay_settlement(trip_id: int):
     prev_end_date = prev["period_end"] if prev else None
     prev_created_at = prev["created_at"] if prev and "created_at" in prev else None
 
-    time_where_sql, time_where_params = _build_expense_time_filter(cursor, prev_end_date, prev_created_at)
+    time_where_sql, time_where_params = _build_expense_time_filter(
+        cursor, prev_end_date, prev_created_at
+    )
 
     # 2) total_expense (PERIOD ONLY), total_members, per-head cost (float)
     cursor.execute(
@@ -343,7 +345,7 @@ def calculate_stay_settlement(trip_id: int):
             FROM expenses e
             WHERE e.trip_id = %s {time_where_sql};
         """,
-        (trip_id, *time_where_params) if time_where_params else (trip_id,)
+        (trip_id, *time_where_params) if time_where_params else (trip_id,),
     )
     total_expense = float(cursor.fetchone()["total_expense"] or 0.0)
 
@@ -374,7 +376,7 @@ def calculate_stay_settlement(trip_id: int):
 
     print(f"🧾 [DEBUG] Loaded carry-forward map for trip {trip_id}: {previous_balance_map}")
 
-    # 4) Compute family balances (Net) using only PERIOD expenses
+    # 4) Families for this trip
     cursor.execute(
         """
         SELECT id AS family_id, family_name, members_count
@@ -386,6 +388,31 @@ def calculate_stay_settlement(trip_id: int):
     )
     families = cursor.fetchall()
 
+    # ⭐ NEW 4a) Advances between families (giver = +, taker = -)
+    cursor.execute(
+        """
+        SELECT payer_family_id, receiver_family_id, amount
+        FROM advances
+        WHERE trip_id = %s;
+        """,
+        (trip_id,),
+    )
+    advances_rows = cursor.fetchall()
+
+    advance_balance = {f["family_id"]: 0.0 for f in families}
+    for a in advances_rows:
+        payer_id = a["payer_family_id"]
+        receiver_id = a["receiver_family_id"]
+        amt = float(a["amount"] or 0.0)
+
+        if payer_id in advance_balance:
+            advance_balance[payer_id] = advance_balance.get(payer_id, 0.0) + amt  # gave → credit
+        if receiver_id in advance_balance:
+            advance_balance[receiver_id] = advance_balance.get(receiver_id, 0.0) - amt  # took → debit
+
+    print(f"💵 [DEBUG] Advances map for trip {trip_id}: {advance_balance}")
+
+    # 5) Compute family balances (Net) using only PERIOD expenses + advances
     results = []
     for f in families:
         fid = f["family_id"]
@@ -396,13 +423,15 @@ def calculate_stay_settlement(trip_id: int):
             FROM expenses e
             WHERE e.trip_id = %s AND e.payer_family_id = %s {time_where_sql};
             """,
-            (trip_id, fid, *time_where_params) if time_where_params else (trip_id, fid)
+            (trip_id, fid, *time_where_params) if time_where_params else (trip_id, fid),
         )
         spent = float(cursor.fetchone()["spent"] or 0.0)
         due = per_head_cost * int(f["members_count"])
         prev_bal = previous_balance_map.get(fid, 0.0)
+        adv = advance_balance.get(fid, 0.0)  # ⭐ NEW
 
-        net = prev_bal + (spent - due)
+        # ⭐ NEW: include advances in NET
+        net = prev_bal + (spent - due) + adv
 
         results.append(
             {
@@ -412,16 +441,16 @@ def calculate_stay_settlement(trip_id: int):
                 "total_spent": spent,
                 "due_amount": due,
                 "previous_balance": prev_bal,
-                "balance": net,  # NET (before payments)
+                "advance_balance": adv,   # ⭐ NEW (for debugging / UI if needed)
+                "balance": net,           # NET (before settlement transactions)
             }
         )
         print(
-            f"🧮 [DEBUG] Family {f['family_name']}: spent={spent:.2f}, due={due:.2f}, prev={prev_bal:.2f}, net={net:.2f}"
+            f"🧮 [DEBUG] Family {f['family_name']}: "
+            f"spent={spent:.2f}, due={due:.2f}, prev={prev_bal:.2f}, adv={adv:.2f}, net={net:.2f}"
         )
 
-    # 5) Load transactions for UI tabs
-    #    - active = used in ADJUSTED (current period)
-    #    - archived = last settlement's transactions (for UI only; NOT re-applied)
+    # 6) Load transactions for UI tabs (same as before)
     cursor.execute(
         """
         SELECT t.id, t.from_family_id,
@@ -463,8 +492,7 @@ def calculate_stay_settlement(trip_id: int):
         txn["from"] = txn.get("from_family")
         txn["to"] = txn.get("to_family")
 
-    # 6) Apply adjustments from ACTIVE transactions ONLY
-    #    ("from" pays → +amt; "to" receives → -amt)
+    # 7) Apply adjustments from ACTIVE transactions ONLY (unchanged)
     adjustments = {f["family_id"]: 0.0 for f in results}
     for txn in active_txns:
         f_from, f_to = txn["from_family_id"], txn["to_family_id"]
@@ -482,17 +510,16 @@ def calculate_stay_settlement(trip_id: int):
             f"▶ {f['family_name']}: Net={f['balance']:.2f} + Adj({adj:+.2f}) = Adjusted={adjusted:.2f}"
         )
 
-    # 6b) Ensure the adjusted balances sum to exactly 0.00 (guard tiny drift)
+    # 7b) Drift correction (unchanged)
     total_adj = sum(f["adjusted_balance"] for f in results)
     if abs(total_adj) > 0.01:
-        # apply correction to the largest absolute adjusted so the vector sum is 0
         target = max(results, key=lambda x: abs(x["adjusted_balance"]))
         target["adjusted_balance"] -= total_adj
         print(
             f"🔧 Final correction {(-total_adj):+.2f} applied to {target['family_name']} (ensured total=0.00)"
         )
 
-    # 7) Suggested settlements (from adjusted)
+    # 8) Suggested settlements (unchanged)
     creditors = [
         {"family_name": f["family_name"], "bal": f["adjusted_balance"]}
         for f in results
@@ -531,7 +558,7 @@ def calculate_stay_settlement(trip_id: int):
         if abs(debtors[di]["bal"]) < 0.01:
             di += 1
 
-    # 8) Period & finalize output (round for UI only)
+    # 9) Period & finalize output (round for UI)
     period_start = (prev_end_date + timedelta(days=1)) if prev_end_date else datetime.utcnow().date()
     period_end = datetime.utcnow().date()
     conn.close()
@@ -540,6 +567,7 @@ def calculate_stay_settlement(trip_id: int):
         f["total_spent"] = round(f["total_spent"])
         f["due_amount"] = round(f["due_amount"])
         f["previous_balance"] = round(f["previous_balance"])
+        f["advance_balance"] = round(f.get("advance_balance", 0.0))  # ⭐ NEW
         f["balance"] = round(f["balance"])
         f["adjusted_balance"] = round(f["adjusted_balance"])
 
@@ -557,9 +585,10 @@ def calculate_stay_settlement(trip_id: int):
         ],
         "previous_settlement_id": prev_settlement_id,
         "active_transactions": active_txns,
-        "archived_transactions": archived_txns,  # for UI only
+        "archived_transactions": archived_txns,
         "suggested": suggested,
     }
+
 
 
 
