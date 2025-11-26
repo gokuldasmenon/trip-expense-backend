@@ -322,7 +322,7 @@ def calculate_stay_settlement(trip_id: int):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # 1) Previous settlement (for carry-forward & period boundary)
+    # 1) Previous settlement (for carry-forward & period boundary  )
     cursor.execute("""
         SELECT id, period_end, created_at
         FROM stay_settlements

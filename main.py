@@ -28,6 +28,7 @@ from realtime import ws_manager
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
 
+
 # ✅ Enable CORS for Flutter
 app.add_middleware(
     CORSMiddleware,
@@ -638,7 +639,7 @@ def get_archived_advances(trip_id: int):
 @app.get("/sync_settlement/{trip_id}")
 def sync_settlement(trip_id: int):
     """
-    Returns settlement in format expected by Flutter.
+    Returns settlement in format expected by Flutter  .
     Includes timestamp and wraps settlement data inside "data".
     Logs detailed traceback for Render debugging.
     """
