@@ -559,8 +559,30 @@ def calculate_stay_settlement(trip_id: int):
             di += 1
 
     # 9) Period & finalize output (round for UI)
-    period_start = (prev_end_date + timedelta(days=1)) if prev_end_date else datetime.utcnow().date()
-    period_end = datetime.utcnow().date()
+    # 9) Determine correct period range
+
+    # If no previous settlement → start at trip start date
+    if not prev_end_date:
+        cursor.execute("SELECT start_date FROM trips WHERE id = %s;", (trip_id,))
+        trip_start = cursor.fetchone()[0] if cursor.fetchone() else datetime.utcnow().date()
+        period_start = trip_start
+    else:
+        # Start at the SAME day the last period ended (no +1 day)
+        period_start = prev_end_date
+
+    # Determine period_end = max(date of latest expense or today's date)
+    cursor.execute("""
+        SELECT MAX(date) FROM expenses WHERE trip_id = %s;
+    """, (trip_id,))
+    max_expense_date = cursor.fetchone()[0]
+
+    if max_expense_date:
+        period_end = max_expense_date
+    else:
+        period_end = datetime.utcnow().date()
+
+
+
     conn.close()
 
     for f in results:
