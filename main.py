@@ -1,7 +1,7 @@
 import json
 import os
 import traceback
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import psycopg2, psycopg2.extras, random, string
@@ -22,8 +22,8 @@ import sys
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from services.reports import  generate_settlement_pdf, share_pdf_via_whatsapp
-
-
+from fastapi import WebSocket
+from realtime import ws_manager
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
 # --------------------------------------------
@@ -221,7 +221,20 @@ def register_user(user: dict):
         cursor.close()
         conn.close()
 
-
+@app.websocket("/ws/trips/{trip_id}/{user_id}")
+async def trip_websocket(websocket: WebSocket, trip_id: int, user_id: int):
+    await ws_manager.connect(trip_id, websocket)
+    print(f"🔌 WebSocket connected trip={trip_id} user={user_id}")
+    try:
+        while True:
+            # You can receive ping or ignore messages
+            _ = await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(trip_id, websocket)
+        print(f"🔌 WebSocket disconnected trip={trip_id} user={user_id}")
+    except Exception as e:
+        ws_manager.disconnect(trip_id, websocket)
+        print(f"❌ WebSocket error: {e}")
 # ================================================
 # 🧳 TRIPS
 # ================================================
@@ -284,23 +297,25 @@ def add_trip(trip: TripIn):
 
 
 
+import json
+
 @app.post("/join_trip/{access_code}")
-def join_trip(access_code: str, user_id: int):
+async def join_trip(access_code: str, user_id: int):
     """
     Join a trip using access code + user_id.
-    Always ensure the owner is stored in trip_members.
+    Also notifies all connected members via WebSocket.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     try:
-        # 🔍 Ensure user exists
-        cursor.execute("SELECT id, name FROM users WHERE id = %s", (user_id,))
+        # ✅ Ensure user exists
+        cursor.execute("SELECT id, name, phone FROM users WHERE id = %s", (user_id,))
         user = cursor.fetchone()
         if not user:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-        # 🔍 Find trip
+        # ✅ Find trip
         cursor.execute("""
             SELECT id, name, start_date, trip_type, access_code, owner_id
             FROM trips
@@ -310,10 +325,10 @@ def join_trip(access_code: str, user_id: int):
         if not trip:
             raise HTTPException(status_code=404, detail="Invalid access code")
 
-        # 👑 Determine role
+        # role
         role = "owner" if user_id == trip["owner_id"] else "member"
 
-        # 👑 Ensure owner is inserted (or updated to owner)
+        # ✅ Insert membership (owner/member logic you already fixed)
         if role == "owner":
             cursor.execute("""
                 INSERT INTO trip_members (trip_id, user_id, role)
@@ -323,7 +338,6 @@ def join_trip(access_code: str, user_id: int):
                 WHERE trip_members.role != 'owner'
             """, (trip["id"], user_id))
         else:
-            # 👥 Normal member insert
             cursor.execute("""
                 INSERT INTO trip_members (trip_id, user_id, role)
                 VALUES (%s, %s, 'member')
@@ -333,6 +347,21 @@ def join_trip(access_code: str, user_id: int):
         conn.commit()
 
         print(f"DEBUG: Joined trip_id={trip['id']} user_id={user_id} role={role}")
+
+        # 🔔 Broadcast "member_joined" event (ignore errors)
+        try:
+            event = {
+                "type": "member_joined",
+                "trip_id": trip["id"],
+                "user_id": user["id"],
+                "name": user["name"],
+                "phone": user.get("phone"),
+                "role": role,
+            }
+            await ws_manager.broadcast_to_trip(trip["id"], json.dumps(event))
+        except Exception as be:
+            print(f"⚠️ WebSocket broadcast failed: {be}")
+
         return {"message": "Joined trip successfully", "trip": trip, "role": role}
 
     except HTTPException:
@@ -345,6 +374,7 @@ def join_trip(access_code: str, user_id: int):
     finally:
         cursor.close()
         conn.close()
+
 
 
 @app.post("/exit_trip/{trip_id}")
@@ -577,6 +607,28 @@ def add_advance(advance: AdvanceModel):
 @app.get("/advances/{trip_id}")
 def get_advances(trip_id: int):
     return advances.get_advances(trip_id)
+@app.get("/archived_advances/{trip_id}")
+def get_archived_advances(trip_id: int):
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cursor.execute("""
+        SELECT aa.id, aa.trip_id,
+               aa.payer_family_id, f1.family_name AS payer_name,
+               aa.receiver_family_id, f2.family_name AS receiver_name,
+               aa.amount, aa.date, aa.archived_at
+        FROM advances_archive aa
+        LEFT JOIN family_details f1 ON aa.payer_family_id = f1.id
+        LEFT JOIN family_details f2 ON aa.receiver_family_id = f2.id
+        WHERE aa.trip_id = %s
+        ORDER BY aa.archived_at DESC, aa.id DESC;
+    """, (trip_id,))
+
+    out = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return out
+
 
 # @app.get("/settlement/{trip_id}")
 # def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
