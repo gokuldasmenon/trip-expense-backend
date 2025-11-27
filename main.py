@@ -667,9 +667,13 @@ def update_advance(self, advance_id, trip_id, payer_id, receiver_id, amount, dat
             date = %s
         WHERE id = %s
     """
-    self.cur.execute(query, (trip_id, payer_id, receiver_id, amount, date, advance_id))
+    self.cur.execute(
+        query,
+        (trip_id, payer_id, receiver_id, amount, date, advance_id),
+    )
     self.conn.commit()
     return {"message": "Advance updated"}
+
 
 
 
