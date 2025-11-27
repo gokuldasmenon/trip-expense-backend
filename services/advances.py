@@ -37,22 +37,23 @@ def get_advances(trip_id):
     conn.close()
     return {"advances": rows}
 
-def update_advance(self, advance_id, trip_id, payer_id, receiver_id, amount, date):
-    query = """
+def update_advance(advance_id, trip_id, payer_id, receiver_id, amount, date):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
         UPDATE advances
-        SET trip_id = %s,
-            payer_family_id = %s,
+        SET payer_family_id = %s,
             receiver_family_id = %s,
             amount = %s,
-            date = %s
+            date = %s,
+            updated_at = NOW()
         WHERE id = %s
-    """
-    self.cur.execute(
-        query,
-        (trip_id, payer_id, receiver_id, amount, date, advance_id),
-    )
-    self.conn.commit()
-    return {"message": "Advance updated"}
+    """, (payer_id, receiver_id, amount, date, advance_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return {"message": "Advance updated successfully"}
+
 
 
 def delete_advance(advance_id):
