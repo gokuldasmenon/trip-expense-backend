@@ -657,15 +657,20 @@ def delete_advance(advance_id: int):
 #     return settlement.get_settlement(trip_id, start_date, end_date, record)
 
 @app.put("/advances/{advance_id}")
-def update_advance(advance_id: int, advance: AdvanceModel):
-    return advances.update_advance(
-        advance_id,
-        advance.trip_id,
-        advance.payer_family_id,
-        advance.receiver_family_id,
-        advance.amount,
-        advance.date,
-    )
+def update_advance(self, advance_id, trip_id, payer_id, receiver_id, amount, date):
+    query = """
+        UPDATE advances
+        SET trip_id = %s,
+            payer_family_id = %s,
+            receiver_family_id = %s,
+            amount = %s,
+            date = %s
+        WHERE id = %s
+    """
+    self.cur.execute(query, (trip_id, payer_id, receiver_id, amount, date, advance_id))
+    self.conn.commit()
+    return {"message": "Advance updated"}
+
 
 
 @app.get("/sync_settlement/{trip_id}")
