@@ -657,7 +657,7 @@ def delete_advance(advance_id: int):
 # def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
 #     return settlement.get_settlement(trip_id, start_date, end_date, record)
 
-@app.put("/advances/{advance_id}")
+
 
 
 @app.put("/advances/{advance_id}")
