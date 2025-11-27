@@ -630,6 +630,27 @@ def get_archived_advances(trip_id: int):
     conn.close()
     return out
 
+@app.delete("/advance/{advance_id}")
+def delete_advance(advance_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("DELETE FROM advances WHERE id = %s RETURNING id;", (advance_id,))
+        deleted = cursor.fetchone()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Advance not found")
+
+        conn.commit()
+        return {"message": "Advance deleted successfully", "id": advance_id}
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete advance: {str(e)}")
+
+    finally:
+        cursor.close()
+        conn.close()
 
 # @app.get("/settlement/{trip_id}")
 # def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
