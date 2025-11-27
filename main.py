@@ -656,6 +656,17 @@ def delete_advance(advance_id: int):
 # def settlement_endpoint(trip_id: int, start_date: str = None, end_date: str = None, record: bool = False):
 #     return settlement.get_settlement(trip_id, start_date, end_date, record)
 
+@app.put("/advances/{advance_id}")
+def update_advance(advance_id: int, advance: AdvanceModel):
+    return advances.update_advance(
+        advance_id,
+        advance.trip_id,
+        advance.payer_family_id,
+        advance.receiver_family_id,
+        advance.amount,
+        advance.date,
+    )
+
 
 @app.get("/sync_settlement/{trip_id}")
 def sync_settlement(trip_id: int):
