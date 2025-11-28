@@ -624,18 +624,18 @@ def record_stay_settlement(trip_id: int, result: dict):
     Finalizes and records the stay settlement.
     - Saves summary and family-level balances (both net & adjusted)
     - Archives active settlement payments
-    - Archives active advances (so they don't affect the next period)
-    - Archives expenses (NEW)
+    - Archives active advances
+    - Archives expenses (using expense_name)
     - Creates idempotent carry-forward log
-    - Prevents accidental duplicate re-finalization (<5s)
-    - If balances are ~0, records a closure settlement
+    - Prevents accidental immediate re-finalization (<5s)
+    - Records closure settlement if balances = 0
     """
     conn = get_connection()
     cursor = conn.cursor()
 
     print(f"🧾 Finalizing stay settlement for trip {trip_id}...")
 
-    # prevent immediate re-finalization within 5 seconds
+    # prevent re-finalization within 5 seconds
     cursor.execute(
         """
         SELECT id, created_at
@@ -648,27 +648,26 @@ def record_stay_settlement(trip_id: int, result: dict):
     existing = cursor.fetchone()
     prev_id = result.get("previous_settlement_id")
     last_id = existing[0] if existing else None
-    print(f"🔍 Checking duplicate prevention: prev_id={prev_id}, last_settlement_in_db={last_id}")
 
     if existing and existing[1]:
         created_time = existing[1].replace(tzinfo=None)
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         seconds_since = (now - created_time).total_seconds()
         if seconds_since < 5:
-            print(
-                f"⚠️ Skipping immediate re-finalization for trip {trip_id} "
-                f"(last settlement {seconds_since:.1f}s ago)"
-            )
+            print(f"⚠️ Preventing duplicate settlement (only {seconds_since:.1f}s old)")
             conn.close()
             return last_id
 
-    # If all adjusted balances are zero → closure entry
-    all_balances = [round(f.get("adjusted_balance", f["balance"]), 2) for f in result["families"]]
+    # detect if all settled → record special closure entry
+    all_balances = [
+        round(f.get("adjusted_balance", f["balance"]), 2)
+        for f in result["families"]
+    ]
     if all(abs(b) < 0.01 for b in all_balances):
-        print(f"ℹ️ All balances are settled for trip {trip_id}, recording zero-balance closure entry.")
+        print(f"ℹ️ All balances are zero — closure settlement will be recorded.")
 
     try:
-        # 1) 💾 Insert summary for the new settlement period
+        # 1) Insert summary record
         cursor.execute(
             """
             INSERT INTO stay_settlements (
@@ -688,16 +687,18 @@ def record_stay_settlement(trip_id: int, result: dict):
             ),
         )
         settlement_id = cursor.fetchone()[0]
-        print(f"✅ Settlement summary saved (ID={settlement_id})")
+        print(f"✅ Settlement summary saved → ID {settlement_id}")
 
-        # 2) 📌 Save family-level balances (net & adjusted)
+        # 2) Insert family settlement details
         for f in result["families"]:
             net_balance = round(float(f.get("balance", 0.0)), 2)
             adjusted_balance = round(float(f.get("adjusted_balance", net_balance)), 2)
-            if abs(adjusted_balance) < 0.01:
-                adjusted_balance = 0.0
+
             if abs(net_balance) < 0.01:
                 net_balance = 0.0
+            if abs(adjusted_balance) < 0.01:
+                adjusted_balance = 0.0
+
             cursor.execute(
                 """
                 INSERT INTO stay_settlement_details (
@@ -706,12 +707,11 @@ def record_stay_settlement(trip_id: int, result: dict):
                 """,
                 (settlement_id, f["family_id"], net_balance, adjusted_balance),
             )
-        print("🏷️ Family-level settlement details saved.")
-        conn.commit()
-        print(f"💾 Summary + details committed (ID={settlement_id})")
 
-        # 3) 📌 Log carry-forward & metadata snapshot
-        print(f"🧾 Logging carry-forward (prev={prev_id}, new={settlement_id})")
+        conn.commit()
+        print("🏷️ Family-level details committed.")
+
+        # 3) Log carry forward & snapshot
         record_carry_forward_log(
             prev_settlement_id=prev_id,
             new_settlement_id=settlement_id,
@@ -719,14 +719,15 @@ def record_stay_settlement(trip_id: int, result: dict):
             cursor=cursor,
         )
 
-        # ✨ Snapshot of balances
-        carry_forward_map = {}
+        # snapshot for audit/history
         cursor.execute(
             "SELECT family_id, adjusted_balance FROM stay_settlement_details WHERE settlement_id = %s;",
             (settlement_id,),
         )
-        for row in cursor.fetchall():
-            carry_forward_map[row[0]] = float(row[1] or 0.0)
+        carry_forward_map = {
+            row[0]: float(row[1] or 0.0)
+            for row in cursor.fetchall()
+        }
 
         record_settlement_snapshot(
             trip_id=trip_id,
@@ -734,25 +735,27 @@ def record_stay_settlement(trip_id: int, result: dict):
             new_settlement_id=settlement_id,
             mode="STAY",
             result_data=result,
-            carry_forward_map=carry_forward_map
+            carry_forward_map=carry_forward_map,
         )
 
-        # 4) 📦 ARCHIVE & CLEAR settlement payments
+        # 4A) Archive settlement transactions
         cursor.execute(
             """
             INSERT INTO settlement_transactions_archive (
-                trip_id, from_family_id, to_family_id, amount, transaction_date, remarks, settlement_id
+                trip_id, from_family_id, to_family_id, amount,
+                transaction_date, remarks, settlement_id
             )
-            SELECT trip_id, from_family_id, to_family_id, amount, transaction_date, remarks, %s
+            SELECT trip_id, from_family_id, to_family_id, amount,
+                   transaction_date, remarks, %s
             FROM settlement_transactions
             WHERE trip_id = %s;
             """,
             (settlement_id, trip_id),
         )
         cursor.execute("DELETE FROM settlement_transactions WHERE trip_id = %s;", (trip_id,))
-        print(f"📦 Settlement transactions archived & cleared → settlement_id={settlement_id}")
+        print("📦 Settlement transactions archived.")
 
-        # 4B) 📦 ARCHIVE & CLEAR ADVANCES
+        # 4B) Archive advances
         cursor.execute(
             """
             INSERT INTO advances_archive (
@@ -769,9 +772,9 @@ def record_stay_settlement(trip_id: int, result: dict):
             (settlement_id, trip_id),
         )
         cursor.execute("DELETE FROM advances WHERE trip_id = %s;", (trip_id,))
-        print(f"📦 Advances archived & cleared → settlement_id={settlement_id}")
+        print("📦 Advances archived.")
 
-        # 4C) 📦 ARCHIVE & CLEAR EXPENSES (NEW)
+        # 4C) Archive expenses (expense_name → particulars)
         cursor.execute(
             """
             INSERT INTO expenses_archive (
@@ -779,7 +782,7 @@ def record_stay_settlement(trip_id: int, result: dict):
                 created_by, updated_by, created_at, updated_at,
                 settlement_id, archived_at
             )
-            SELECT trip_id, payer_family_id, amount, date, particulars,
+            SELECT trip_id, payer_family_id, amount, date, expense_name,
                    created_by, updated_by, created_at, updated_at,
                    %s, NOW()
             FROM expenses
@@ -787,12 +790,12 @@ def record_stay_settlement(trip_id: int, result: dict):
             """,
             (settlement_id, trip_id),
         )
-
         cursor.execute("DELETE FROM expenses WHERE trip_id = %s;", (trip_id,))
-        print(f"📦 Expenses archived & cleared → settlement_id={settlement_id}")
+        print("📦 Expenses archived.")
 
         conn.commit()
-        print(f"🏁 Stay settlement finalized successfully (ID={settlement_id})")
+        print(f"🏁 Stay settlement FINALIZED successfully → ID {settlement_id}")
+
         return settlement_id
 
     except Exception as e:
@@ -804,6 +807,7 @@ def record_stay_settlement(trip_id: int, result: dict):
 
     finally:
         conn.close()
+
 
 
     
