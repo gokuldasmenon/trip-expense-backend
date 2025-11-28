@@ -625,6 +625,7 @@ def record_stay_settlement(trip_id: int, result: dict):
     - Saves summary and family-level balances (both net & adjusted)
     - Archives active settlement payments
     - Archives active advances (so they don't affect the next period)
+    - Archives expenses (NEW)
     - Creates idempotent carry-forward log
     - Prevents accidental duplicate re-finalization (<5s)
     - If balances are ~0, records a closure settlement
@@ -770,6 +771,26 @@ def record_stay_settlement(trip_id: int, result: dict):
         cursor.execute("DELETE FROM advances WHERE trip_id = %s;", (trip_id,))
         print(f"📦 Advances archived & cleared → settlement_id={settlement_id}")
 
+        # 4C) 📦 ARCHIVE & CLEAR EXPENSES (NEW)
+        cursor.execute(
+            """
+            INSERT INTO expenses_archive (
+                trip_id, payer_family_id, amount, date, particulars,
+                created_by, updated_by, created_at, updated_at,
+                settlement_id, archived_at
+            )
+            SELECT trip_id, payer_family_id, amount, date, particulars,
+                   created_by, updated_by, created_at, updated_at,
+                   %s, NOW()
+            FROM expenses
+            WHERE trip_id = %s;
+            """,
+            (settlement_id, trip_id),
+        )
+
+        cursor.execute("DELETE FROM expenses WHERE trip_id = %s;", (trip_id,))
+        print(f"📦 Expenses archived & cleared → settlement_id={settlement_id}")
+
         conn.commit()
         print(f"🏁 Stay settlement finalized successfully (ID={settlement_id})")
         return settlement_id
@@ -785,6 +806,7 @@ def record_stay_settlement(trip_id: int, result: dict):
         conn.close()
 
 
+    
 
 def record_trip_settlement(trip_id: int, result: dict) -> int:
     """

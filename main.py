@@ -600,6 +600,43 @@ def update_expense(expense_id: int, expense: ExpenseUpdate):
 def delete_expense(expense_id: int):
     return expenses.delete_expense(expense_id)
 
+@app.post("/archive_expenses/{trip_id}/{settlement_id}")
+def archive_expenses(trip_id: int, settlement_id: int):
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO expenses_archive (
+                trip_id, payer_family_id, amount, date, particulars,
+                created_by, updated_by, created_at, updated_at,
+                settlement_id, archived_at
+            )
+            SELECT trip_id, payer_family_id, amount, date, particulars,
+                   created_by, updated_by, created_at, updated_at,
+                   %s, NOW()
+            FROM expenses
+            WHERE trip_id = %s;
+            """,
+            (settlement_id, trip_id),
+        )
+
+        cursor.execute(
+            "DELETE FROM expenses WHERE trip_id = %s;", (trip_id,)
+        )
+
+        conn.commit()
+        return {"status": "success", "message": "Expenses archived and cleared."}
+
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "message": str(e)}
+
+    finally:
+        conn.close()
+
+
 
 @app.post("/add_advance")
 def add_advance(advance: AdvanceModel):
