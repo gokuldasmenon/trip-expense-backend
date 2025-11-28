@@ -636,6 +636,30 @@ def archive_expenses(trip_id: int, settlement_id: int):
     finally:
         conn.close()
 
+@app.get("/expenses-archived/{trip_id}")
+def get_archived_expenses(trip_id: int):
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT 
+                ea.id,
+                ea.trip_id,
+                ea.amount,
+                ea.date,
+                ea.particulars AS expense_name,
+                fd.family_name AS payer,
+                ea.created_at
+            FROM expenses_archive ea
+            LEFT JOIN family_details fd 
+                ON ea.payer_family_id = fd.id
+            WHERE ea.trip_id = %s
+            ORDER BY ea.date DESC NULLS LAST, ea.id DESC
+        """, (trip_id,))
+        return {"expenses": cur.fetchall()}
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.post("/add_advance")
