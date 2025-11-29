@@ -105,7 +105,25 @@ async def group_get_details(group_id: int, user_id: int | None = None):
     cursor.close(); conn.close()
     # isoformat fixes...
     ...
-    return {"group": group, "expenses": expenses}
+    # ---- Calculate spending grouped by user phone ----
+    spending_map = {}
+
+    for e in expenses:
+        phone = e.get("added_by_phone") or "Unknown"
+        amount = float(e.get("amount") or 0)
+
+        if phone not in spending_map:
+            spending_map[phone] = 0
+        spending_map[phone] += amount
+
+    # Convert to list for Flutter
+    spending_list = [{"phone": k, "amount": v} for k, v in spending_map.items()]
+
+    return {
+        "group": group,
+        "expenses": expenses,
+        "spending": spending_list
+    }
 
 
 
