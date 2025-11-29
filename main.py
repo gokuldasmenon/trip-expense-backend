@@ -1466,3 +1466,6 @@ async def route_group_edit_expense(request: Request):
 async def route_group_update_initial_fund(request: Request):
    
     return await group_update_initial_fund(request)
+@app.post("/group/exit")
+async def route_group_exit(request: Request):
+    return await group_exit(request)

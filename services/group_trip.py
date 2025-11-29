@@ -401,3 +401,33 @@ async def group_update_initial_fund(request: Request):
     conn.close()
 
     return {"success": True, "group": group}
+async def group_exit(request: Request):
+    data = await request.json()
+    group_id = data.get("group_id")
+    user_id = data.get("user_id")
+
+    if not group_id or not user_id:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Prevent creator from exiting
+    cursor.execute("SELECT created_by FROM group_trip WHERE id=%s", (group_id,))
+    row = cursor.fetchone()
+
+    if row and row["created_by"] == user_id:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=403, detail="Creator cannot exit the group")
+
+    # Remove participant
+    cursor.execute(
+        "DELETE FROM group_participants WHERE group_id=%s AND user_id=%s",
+        (group_id, user_id),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {"success": True}
