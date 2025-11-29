@@ -435,3 +435,39 @@ async def group_exit(request: Request):
     conn.close()
 
     return {"success": True}
+
+async def group_delete(request: Request):
+    data = await request.json()
+    group_id = data.get("group_id")
+    user_id = data.get("user_id")
+
+    if not group_id or not user_id:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Check creator
+    cursor.execute("SELECT created_by FROM group_trip WHERE id=%s", (group_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.close(); conn.close()
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    if row["created_by"] != user_id:
+        cursor.close(); conn.close()
+        raise HTTPException(status_code=403, detail="Only creator can delete group trip")
+
+    # Delete related expenses + participants first
+    cursor.execute("DELETE FROM group_expense WHERE group_id=%s", (group_id,))
+    cursor.execute("DELETE FROM group_participants WHERE group_id=%s", (group_id,))
+
+    # Delete group
+    cursor.execute("DELETE FROM group_trip WHERE id=%s", (group_id,))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {"success": True}
