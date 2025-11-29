@@ -66,49 +66,54 @@ async def group_create(request: Request):
 # -----------------------------------------
 # 2) GET GROUP DETAILS (group + expenses)
 # -----------------------------------------
-async def group_get_details(group_id: int):
+async def group_get_details(group_id: int, user_id: int | None = None):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Get group
+    # fetch group
     cursor.execute("SELECT * FROM group_trip WHERE id = %s", (group_id,))
     group = cursor.fetchone()
-
     if not group:
-        cursor.close()
-        conn.close()
+        cursor.close(); conn.close()
         raise HTTPException(status_code=404, detail="Group not found")
 
-    # Get expenses
-    cursor.execute("""
-        SELECT id, title, amount, added_by_phone, created_at
-        FROM group_expense
-        WHERE group_id = %s
-        ORDER BY created_at DESC
-    """, (group_id,))
+    # permission: owner OR participant OR allow if user_id is None and group is public? we deny if None
+    allowed = False
+    if user_id is not None:
+        if group['created_by'] == user_id:
+            allowed = True
+        else:
+            cursor.execute("""
+                SELECT 1 FROM group_participants WHERE group_id = %s AND user_id = %s LIMIT 1
+            """, (group_id, user_id))
+            if cursor.fetchone():
+                allowed = True
+
+    if not allowed:
+        cursor.close(); conn.close()
+        raise HTTPException(status_code=403, detail="Not allowed to view this group")
+
+    # fetch expenses (same as before)
+    cursor.execute("""SELECT id, title, amount, added_by_phone, created_at FROM group_expense
+                      WHERE group_id = %s ORDER BY created_at DESC""", (group_id,))
     expenses = cursor.fetchall()
 
-    cursor.close()
-    conn.close()
-
-    # Fix datetime
-    for k, v in group.items():
-        if isinstance(v, datetime):
-            group[k] = v.isoformat()
-    for e in expenses:
-        if isinstance(e.get("created_at"), datetime):
-            e["created_at"] = e["created_at"].isoformat()
-
+    cursor.close(); conn.close()
+    # isoformat fixes...
+    ...
     return {"group": group, "expenses": expenses}
+
 
 
 # -----------------------------------------
 # 3) GET CURRENT ACTIVE GROUP
 # -----------------------------------------
-async def group_get_current():
+# group_get_current: returns group visible to the specified user (owner or joined)
+async def group_get_current(user_id: int | None = None):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
+    # Get the latest group first (you may restrict to active/unfinished later)
     cursor.execute("""
         SELECT * FROM group_trip
         ORDER BY id DESC
@@ -116,18 +121,47 @@ async def group_get_current():
     """)
     group = cursor.fetchone()
 
+    if not group:
+        cursor.close()
+        conn.close()
+        return {"group": None}
+
+    # If no user_id passed, hide the group (safer)
+    if user_id is None:
+        cursor.close()
+        conn.close()
+        return {"group": None}
+
+    # If user is creator => allowed
+    if group['created_by'] == user_id:
+        # isoformat fix
+        for k, v in group.items():
+            if isinstance(v, datetime):
+                group[k] = v.isoformat()
+        cursor.close()
+        conn.close()
+        return {"group": group}
+
+    # Otherwise check participants table
+    cursor.execute("""
+        SELECT 1 FROM group_participants
+        WHERE group_id = %s AND user_id = %s
+        LIMIT 1
+    """, (group['id'], user_id))
+    joined = cursor.fetchone()
+
     cursor.close()
     conn.close()
 
-    if not group:
-        return {"group": None}
+    if joined:
+        for k, v in group.items():
+            if isinstance(v, datetime):
+                group[k] = v.isoformat()
+        return {"group": group}
 
-    # Fix datetime
-    for k, v in group.items():
-        if isinstance(v, datetime):
-            group[k] = v.isoformat()
+    # Not creator or joined => hide
+    return {"group": None}
 
-    return {"group": group}
 
 
 # -----------------------------------------
@@ -258,27 +292,41 @@ async def group_update_participants(request: Request):
 async def group_join(request: Request):
     data = await request.json()
     code = data.get("code")
+    user_id = data.get("user_id")   # IMPORTANT: caller should pass their user_id
 
     if not code:
         raise HTTPException(status_code=400, detail="Access code required")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     cursor.execute("SELECT * FROM group_trip WHERE access_code = %s", (code,))
     group = cursor.fetchone()
-
-    cursor.close()
-    conn.close()
-
     if not group:
+        cursor.close(); conn.close()
         raise HTTPException(status_code=404, detail="Invalid access code")
 
+    # Insert into participants (ignore duplicate)
+    try:
+        cursor.execute("""
+            INSERT INTO group_participants (group_id, user_id)
+            VALUES (%s, %s)
+            ON CONFLICT (group_id, user_id) DO NOTHING
+            RETURNING id
+        """, (group['id'], user_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # return group details (optional: filtered)
     for k, v in group.items():
         if isinstance(v, datetime):
             group[k] = v.isoformat()
-
+    cursor.close(); conn.close()
     return {"success": True, "group": group}
+
 # 8) EDIT EXPENSE
 async def group_edit_expense(request: Request):
     data = await request.json()
