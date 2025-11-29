@@ -66,7 +66,7 @@ async def group_create(request: Request):
 # -----------------------------------------
 # 2) GET GROUP DETAILS (group + expenses)
 # -----------------------------------------
-async def get_group_details(group_id: int):
+async def group_get_details(group_id: int):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -105,7 +105,7 @@ async def get_group_details(group_id: int):
 # -----------------------------------------
 # 3) GET CURRENT ACTIVE GROUP
 # -----------------------------------------
-async def get_current_group():
+async def group_get_current():
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -133,7 +133,7 @@ async def get_current_group():
 # -----------------------------------------
 # 4) ADD EXPENSE
 # -----------------------------------------
-async def add_group_expense(request: Request):
+async def group_add_expense(request: Request):
     try:
         data = await request.json()
     except:
