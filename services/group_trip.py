@@ -8,7 +8,7 @@ from datetime import datetime
 import psycopg2.extras
 import random
 import string
-
+import psycopg2
 from database import get_connection
 
 
