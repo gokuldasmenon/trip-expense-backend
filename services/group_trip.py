@@ -326,3 +326,30 @@ async def group_edit_expense(request: Request):
     conn.close()
 
     return {"success": True}
+
+async def group_update_initial_fund(request: Request):
+    data = await request.json()
+    group_id = data.get("group_id")
+    initial_fund = data.get("initial_fund")
+
+    if not group_id or initial_fund is None:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Update and recalc balance difference
+    cursor.execute("""
+        UPDATE group_trip
+        SET current_balance = current_balance + (%s - initial_fund),
+            initial_fund = %s
+        WHERE id = %s
+        RETURNING *
+    """, (initial_fund, initial_fund, group_id))
+
+    group = cursor.fetchone()
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {"success": True, "group": group}
