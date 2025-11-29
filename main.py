@@ -32,7 +32,8 @@ from services.group_trip import (
     group_add_expense,
     group_delete_expense,
     group_update_participants,
-    group_join
+    group_join,
+    group_edit_expense
 )
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
@@ -1455,3 +1456,7 @@ async def route_group_update_participants(request: Request):
 async def route_group_join(request: Request):
     return await group_join(request)
 
+@app.post("/group/edit_expense")
+async def route_group_edit_expense(request: Request):
+    
+    return await group_edit_expense(request)

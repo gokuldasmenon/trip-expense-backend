@@ -279,3 +279,50 @@ async def group_join(request: Request):
             group[k] = v.isoformat()
 
     return {"success": True, "group": group}
+# 8) EDIT EXPENSE
+async def group_edit_expense(request: Request):
+    data = await request.json()
+    expense_id = data.get("id")
+    new_title = data.get("title")
+    new_amount = data.get("amount")
+
+    if not expense_id or not new_title or new_amount is None:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # 1. Get old amount and group_id
+    cursor.execute("""
+        SELECT group_id, amount FROM group_expense WHERE id = %s
+    """, (expense_id,))
+    old = cursor.fetchone()
+
+    if not old:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    old_amount = old["amount"]
+    group_id = old["group_id"]
+
+    # 2. Update expense
+    cursor.execute("""
+        UPDATE group_expense
+        SET title = %s, amount = %s
+        WHERE id = %s
+    """, (new_title, new_amount, expense_id))
+
+    # 3. Update group balance difference
+    diff = new_amount - old_amount
+    cursor.execute("""
+        UPDATE group_trip
+        SET current_balance = current_balance - %s
+        WHERE id = %s
+    """, (diff, group_id))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return {"success": True}
