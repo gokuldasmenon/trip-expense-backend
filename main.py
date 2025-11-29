@@ -35,7 +35,8 @@ from services.group_trip import (
     group_join,
     group_edit_expense,
     group_update_initial_fund,
-    group_exit
+    group_exit,
+    group_delete
 )
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
@@ -1470,3 +1471,8 @@ async def route_group_update_initial_fund(request: Request):
 @app.post("/group/exit")
 async def route_group_exit(request: Request):
     return await group_exit(request)
+
+@app.post("/group/delete")
+async def route_group_delete(request: Request):
+    
+    return await group_delete(request)

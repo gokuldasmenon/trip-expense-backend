@@ -80,14 +80,18 @@ async def group_get_details(group_id: int, user_id: int | None = None):
     # permission: owner OR participant OR allow if user_id is None and group is public? we deny if None
     allowed = False
     if user_id is not None:
-        if group['created_by'] == user_id:
+        # Check if creator
+        if int(group['created_by']) == int(user_id):
             allowed = True
         else:
             cursor.execute("""
-                SELECT 1 FROM group_participants WHERE group_id = %s AND user_id = %s LIMIT 1
+                SELECT 1 FROM group_participants
+                WHERE group_id = %s AND user_id = %s
+                LIMIT 1
             """, (group_id, user_id))
             if cursor.fetchone():
                 allowed = True
+
 
     if not allowed:
         cursor.close(); conn.close()
