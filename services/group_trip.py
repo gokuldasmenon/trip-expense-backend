@@ -22,7 +22,7 @@ def generate_access_code(length=8):
 # -----------------------------------------
 # 1) CREATE GROUP
 # -----------------------------------------
-async def create_group(request: Request):
+async def group_create(request: Request):
     try:
         data = await request.json()
     except Exception:
