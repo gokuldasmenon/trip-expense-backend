@@ -26,13 +26,13 @@ from fastapi import WebSocket
 from realtime import ws_manager
 from fastapi import Body
 from services.group_trip import (
-    create_group,
-    get_group_details,
-    get_current_group,
-    add_expense,
-    delete_expense,
-    update_participants,
-    join_group
+    group_create,
+    group_get_details,
+    group_get_current,
+    group_add_expense,
+    group_delete_expense,
+    group_update_participants,
+    group_join
 )
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
@@ -1428,29 +1428,30 @@ def settlement_snapshot(trip_id: int):
     return data
 
 @app.post("/group/create")
-async def route_create_group(request: Request):
-    return await create_group(request)
+async def route_group_create(request: Request):
+    return await group_create(request)
 
 @app.get("/group/details")
 async def route_group_details(group_id: int):
-    return await get_group_details(group_id)
+    return await group_get_details(group_id)
 
 @app.get("/group/current")
 async def route_group_current():
-    return await get_current_group()
+    return await group_get_current()
 
 @app.post("/group/add_expense")
-async def route_add_expense(request: Request):
-    return await add_expense(request)
+async def route_group_add_expense(request: Request):
+    return await group_add_expense(request)
 
 @app.post("/group/delete_expense")
-async def route_delete_expense(request: Request):
-    return await delete_expense(request)
+async def route_group_delete_expense(request: Request):
+    return await group_delete_expense(request)
 
 @app.post("/group/update_participants")
-async def route_update_participants(request: Request):
-    return await update_participants(request)
+async def route_group_update_participants(request: Request):
+    return await group_update_participants(request)
 
 @app.post("/group/join")
-async def route_join_group(request: Request):
-    return await join_group(request)
+async def route_group_join(request: Request):
+    return await group_join(request)
+

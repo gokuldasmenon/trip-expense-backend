@@ -133,7 +133,7 @@ async def get_current_group():
 # -----------------------------------------
 # 4) ADD EXPENSE
 # -----------------------------------------
-async def add_expense(request: Request):
+async def add_group_expense(request: Request):
     try:
         data = await request.json()
     except:
@@ -179,7 +179,7 @@ async def add_expense(request: Request):
 # -----------------------------------------
 # 5) DELETE EXPENSE
 # -----------------------------------------
-async def delete_expense(request: Request):
+async def group_delete_expense(request: Request):
     data = await request.json()
     expense_id = data.get("id")
 
@@ -217,7 +217,7 @@ async def delete_expense(request: Request):
 # -----------------------------------------
 # 6) UPDATE PARTICIPANTS (creator only)
 # -----------------------------------------
-async def update_participants(request: Request):
+async def group_update_participants(request: Request):
     data = await request.json()
     group_id = data.get("group_id")
     participants = data.get("participants")
@@ -255,7 +255,7 @@ async def update_participants(request: Request):
 # -----------------------------------------
 # 7) JOIN GROUP BY ACCESS CODE
 # -----------------------------------------
-async def join_group(request: Request):
+async def group_join(request: Request):
     data = await request.json()
     code = data.get("code")
 
