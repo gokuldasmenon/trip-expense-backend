@@ -1436,8 +1436,8 @@ async def route_group_create(request: Request):
     return await group_create(request)
 
 @app.get("/group/details")
-async def route_group_details(group_id: int):
-    return await group_get_details(group_id)
+async def route_group_details(group_id: int, user_id: int):
+    return await group_get_details(group_id, user_id)
 
 @app.get("/group/current")
 async def route_group_current(user_id: int | None = None):
