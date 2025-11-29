@@ -34,7 +34,8 @@ from services.group_trip import (
     group_update_participants,
     group_join,
     group_edit_expense,
-    group_update_initial_fund
+    group_update_initial_fund,
+    group_exit
 )
 # --------------------------------------------
 app = FastAPI(title="Expense Tracker API")
