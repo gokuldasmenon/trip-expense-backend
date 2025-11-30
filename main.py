@@ -28,7 +28,6 @@ from fastapi import Body
 from services.group_trip import (
     group_create,
     group_get_details,
-    group_get_current,
     group_add_expense,
     group_delete_expense,
     group_update_participants,
