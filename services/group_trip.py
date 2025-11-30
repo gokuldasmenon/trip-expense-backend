@@ -130,59 +130,38 @@ async def group_get_details(group_id: int, user_id: int | None = None):
 # -----------------------------------------
 # 3) GET CURRENT ACTIVE GROUP
 # -----------------------------------------
-# group_get_current: returns group visible to the specified user (owner or joined)
-async def group_get_current(user_id: int | None = None):
+# -----------------------------------------
+# 3) GET ALL GROUPS FOR A USER
+# -----------------------------------------
+async def group_get_all(user_id: int):
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Get the latest group first (you may restrict to active/unfinished later)
+    # Fetch all groups where user is creator OR participant
     cursor.execute("""
-        SELECT * FROM group_trip
-        ORDER BY id DESC
-        LIMIT 1
-    """)
-    group = cursor.fetchone()
+        SELECT DISTINCT g.*
+        FROM group_trip g
+        LEFT JOIN group_participants p
+             ON g.id = p.group_id
+        WHERE g.created_by = %s
+           OR p.user_id = %s
+        ORDER BY g.id DESC
+    """, (user_id, user_id))
 
-    if not group:
-        cursor.close()
-        conn.close()
-        return {"group": None}
-
-    # If no user_id passed, hide the group (safer)
-    if user_id is None:
-        cursor.close()
-        conn.close()
-        return {"group": None}
-
-    # If user is creator => allowed
-    if group['created_by'] == user_id:
-        # isoformat fix
-        for k, v in group.items():
-            if isinstance(v, datetime):
-                group[k] = v.isoformat()
-        cursor.close()
-        conn.close()
-        return {"group": group}
-
-    # Otherwise check participants table
-    cursor.execute("""
-        SELECT 1 FROM group_participants
-        WHERE group_id = %s AND user_id = %s
-        LIMIT 1
-    """, (group['id'], user_id))
-    joined = cursor.fetchone()
-
+    groups = cursor.fetchall()
     cursor.close()
     conn.close()
 
-    if joined:
-        for k, v in group.items():
+    # Convert datetime → isoformat
+    for g in groups:
+        for k, v in g.items():
             if isinstance(v, datetime):
-                group[k] = v.isoformat()
-        return {"group": group}
+                g[k] = v.isoformat()
 
-    # Not creator or joined => hide
-    return {"group": None}
+    return {"groups": groups}
 
 
 
