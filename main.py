@@ -1439,9 +1439,9 @@ async def route_group_create(request: Request):
 async def route_group_details(group_id: int, user_id: int):
     return await group_get_details(group_id, user_id)
 
-@app.get("/group/current")
-async def route_group_current(user_id: int | None = None):
-    return await group_get_current(user_id)
+# @app.get("/group/current")
+# async def route_group_current(user_id: int | None = None):
+#     return await group_get_current(user_id)
 
 @app.post("/group/add_expense")
 async def route_group_add_expense(request: Request):
