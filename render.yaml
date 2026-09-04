@@ -2,9 +2,27 @@ services:
   - type: web
     name: trip-expense-backend
     env: python
+    rootDirectory: backend
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port 10000"
     plan: free
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: DATABASE_URL
+        sync: false  # already added manually in Render Dashboard
+      # 🔐 Auth (JWT) — REQUIRED. Set this in the Render dashboard to a
+      # long random secret (e.g. `openssl rand -hex 32`). Every login
+      # token is forgeable if this is left unset, so the app must not be
+      # deployed to production without it.
+      - key: JWT_SECRET_KEY
+        sync: false  # set manually in Render Dashboard — do not commit a real value here
+      # 📱 SMS OTP delivery via Twilio — OPTIONAL. Omit all three to run
+      # in dev mode, where OTPs are logged server-side and returned in the
+      # /auth/request_otp response as "debug_otp" instead of being texted.
+      - key: TWILIO_ACCOUNT_SID
+        sync: false  # optional — set manually in Render Dashboard to enable real SMS
+      - key: TWILIO_AUTH_TOKEN
+        sync: false  # optional — set manually in Render Dashboard to enable real SMS
+      - key: TWILIO_FROM_NUMBER
+        sync: false  # optional — set manually in Render Dashboard to enable real SMS

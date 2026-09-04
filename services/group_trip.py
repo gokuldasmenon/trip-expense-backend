@@ -2,6 +2,13 @@
 # -----------------------------------------
 # Group Trip Backend Module for FastAPI
 # -----------------------------------------
+#
+# Every function here now takes an explicit `current_user: dict` (the
+# caller identity resolved by auth.get_current_user in main.py's route
+# wrappers) instead of trusting a client-supplied user_id/created_by field
+# in the request body for AUTHORIZATION purposes. A body field is still
+# read where it names a *different* resource (e.g. group_id, expense id),
+# never to establish who the caller is.
 
 from fastapi import HTTPException, Request
 from datetime import datetime
@@ -10,6 +17,7 @@ import random
 import string
 import psycopg2
 from database import get_connection
+from auth import require_group_access, require_group_creator, group_id_for_group_expense
 
 
 # -----------------------------------------
@@ -22,7 +30,7 @@ def generate_access_code(length=8):
 # -----------------------------------------
 # 1) CREATE GROUP
 # -----------------------------------------
-async def group_create(request: Request):
+async def group_create(request: Request, current_user: dict):
     try:
         data = await request.json()
     except Exception:
@@ -31,13 +39,14 @@ async def group_create(request: Request):
     name = data.get("name")
     participants = data.get("participants", 1)
     initial_fund = data.get("initial_fund", 0)
-    created_by = data.get("created_by")
 
     if not name:
         raise HTTPException(status_code=400, detail="Group name required")
 
-    if not created_by:
-        raise HTTPException(status_code=400, detail="created_by (user_id) required")
+    # The creator is always the authenticated caller — a client-supplied
+    # created_by is ignored so a group can't be created "owned by" someone
+    # else.
+    created_by = current_user["id"]
 
     access_code = generate_access_code()
 
@@ -66,7 +75,7 @@ async def group_create(request: Request):
 # -----------------------------------------
 # 2) GET GROUP DETAILS (group + expenses)
 # -----------------------------------------
-async def group_get_details(group_id: int, user_id: int | None = None):
+async def group_get_details(group_id: int, current_user: dict):
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -77,21 +86,19 @@ async def group_get_details(group_id: int, user_id: int | None = None):
         cursor.close(); conn.close()
         raise HTTPException(status_code=404, detail="Group not found")
 
-    # permission: owner OR participant OR allow if user_id is None and group is public? we deny if None
+    # permission: creator OR participant
+    user_id = current_user["id"]
     allowed = False
-    if user_id is not None:
-        # Check if creator
-        if int(group['created_by']) == int(user_id):
+    if int(group['created_by']) == int(user_id):
+        allowed = True
+    else:
+        cursor.execute("""
+            SELECT 1 FROM group_participants
+            WHERE group_id = %s AND user_id = %s
+            LIMIT 1
+        """, (group_id, user_id))
+        if cursor.fetchone():
             allowed = True
-        else:
-            cursor.execute("""
-                SELECT 1 FROM group_participants
-                WHERE group_id = %s AND user_id = %s
-                LIMIT 1
-            """, (group_id, user_id))
-            if cursor.fetchone():
-                allowed = True
-
 
     if not allowed:
         cursor.close(); conn.close()
@@ -128,19 +135,15 @@ async def group_get_details(group_id: int, user_id: int | None = None):
 
 
 # -----------------------------------------
-# 3) GET CURRENT ACTIVE GROUP
+# 3) GET ALL GROUPS FOR THE CALLER
 # -----------------------------------------
-# -----------------------------------------
-# 3) GET ALL GROUPS FOR A USER
-# -----------------------------------------
-async def group_get_all(user_id: int):
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
+async def group_get_all(current_user: dict):
+    user_id = current_user["id"]
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    # Fetch all groups where user is creator OR participant
+    # Fetch all groups where the caller is creator OR participant
     cursor.execute("""
         SELECT DISTINCT g.*
         FROM group_trip g
@@ -166,9 +169,9 @@ async def group_get_all(user_id: int):
 
 
 # -----------------------------------------
-# 4) ADD EXPENSE
+# 4) ADD EXPENSE (any group member)
 # -----------------------------------------
-async def group_add_expense(request: Request):
+async def group_add_expense(request: Request, current_user: dict):
     try:
         data = await request.json()
     except:
@@ -181,6 +184,8 @@ async def group_add_expense(request: Request):
 
     if not group_id or not title or not amount or not phone:
         raise HTTPException(status_code=400, detail="Missing required fields")
+
+    require_group_access(group_id, current_user)
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -212,14 +217,18 @@ async def group_add_expense(request: Request):
 
 
 # -----------------------------------------
-# 5) DELETE EXPENSE
+# 5) DELETE EXPENSE (any group member)
 # -----------------------------------------
-async def group_delete_expense(request: Request):
+async def group_delete_expense(request: Request, current_user: dict):
     data = await request.json()
     expense_id = data.get("id")
 
     if not expense_id:
         raise HTTPException(status_code=400, detail="Expense id required")
+
+    # Resolve the owning group and check membership before touching anything.
+    group_id = group_id_for_group_expense(expense_id)
+    require_group_access(group_id, current_user)
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -252,14 +261,17 @@ async def group_delete_expense(request: Request):
 # -----------------------------------------
 # 6) UPDATE PARTICIPANTS (creator only)
 # -----------------------------------------
-async def group_update_participants(request: Request):
+async def group_update_participants(request: Request, current_user: dict):
     data = await request.json()
     group_id = data.get("group_id")
     participants = data.get("participants")
-    user_id = data.get("user_id")
 
-    if not group_id or participants is None or not user_id:
+    if not group_id or participants is None:
         raise HTTPException(status_code=400, detail="Missing fields")
+
+    # The acting user is always the authenticated caller.
+    user_id = current_user["id"]
+    require_group_creator(group_id, current_user)
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -290,15 +302,15 @@ async def group_update_participants(request: Request):
 # -----------------------------------------
 # 7) JOIN GROUP BY ACCESS CODE
 # -----------------------------------------
-async def group_join(request: Request):
+async def group_join(request: Request, current_user: dict):
     data = await request.json()
     code = data.get("code")
-    user_id = data.get("user_id")   # IMPORTANT: caller should pass their user_id
 
     if not code:
         raise HTTPException(status_code=400, detail="Access code required")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id required")
+
+    # The joining user is always the authenticated caller.
+    user_id = current_user["id"]
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -328,20 +340,20 @@ async def group_join(request: Request):
     cursor.close(); conn.close()
     return {"success": True, "group": group}
 
-# 8) EDIT EXPENSE
-async def group_edit_expense(request: Request):
+# 8) EDIT EXPENSE (any group member)
+async def group_edit_expense(request: Request, current_user: dict):
+    data = await request.json()
+    expense_id = data.get("id")
+    new_title = data.get("title")
+    new_amount = data.get("amount")
+
+    if not expense_id or not new_title or new_amount is None:
+        raise HTTPException(status_code=400, detail="Missing fields")
+
+    conn = get_connection()
+    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
     try:
-        data = await request.json()
-        expense_id = data.get("id")
-        new_title = data.get("title")
-        new_amount = data.get("amount")
-
-        if not expense_id or not new_title or new_amount is None:
-            raise HTTPException(status_code=400, detail="Missing fields")
-
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
         # Fetch old values
         cursor.execute("""
             SELECT group_id, amount FROM group_expense WHERE id = %s
@@ -349,15 +361,16 @@ async def group_edit_expense(request: Request):
         old = cursor.fetchone()
 
         if not old:
-            cursor.close(); conn.close()
             raise HTTPException(status_code=404, detail="Expense not found")
+
+        group_id = old["group_id"]
+        require_group_access(group_id, current_user)
 
         # Convert types: required because Postgres returns Decimal
         old_amount = float(old["amount"])
         new_amount = float(new_amount)
 
         diff = new_amount - old_amount
-        group_id = old["group_id"]
 
         # Update title & amount
         cursor.execute("""
@@ -374,22 +387,33 @@ async def group_edit_expense(request: Request):
         """, (diff, group_id))
 
         conn.commit()
+        return {"success": True}
+
+    except HTTPException:
+        # Auth/validation failures should propagate as real HTTP errors,
+        # not get swallowed into a 200 "success: false" response.
+        raise
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
         cursor.close()
         conn.close()
 
-        return {"success": True}
 
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-async def group_update_initial_fund(request: Request):
+# -----------------------------------------
+# 9) UPDATE INITIAL FUND (creator only)
+# -----------------------------------------
+async def group_update_initial_fund(request: Request, current_user: dict):
     data = await request.json()
     group_id = data.get("group_id")
     initial_fund = data.get("initial_fund")
 
     if not group_id or initial_fund is None:
         raise HTTPException(status_code=400, detail="Missing fields")
+
+    # Setting the initial fund is an owner-level trip-lifecycle action.
+    require_group_creator(group_id, current_user)
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -409,13 +433,21 @@ async def group_update_initial_fund(request: Request):
     conn.close()
 
     return {"success": True, "group": group}
-async def group_exit(request: Request):
+
+
+# -----------------------------------------
+# 10) EXIT GROUP (any member except the creator)
+# -----------------------------------------
+async def group_exit(request: Request, current_user: dict):
     data = await request.json()
     group_id = data.get("group_id")
-    user_id = data.get("user_id")
 
-    if not group_id or not user_id:
+    if not group_id:
         raise HTTPException(status_code=400, detail="Missing fields")
+
+    # The exiting user is always the authenticated caller — any member (not
+    # just the creator) may exit their own membership.
+    user_id = current_user["id"]
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -424,7 +456,12 @@ async def group_exit(request: Request):
     cursor.execute("SELECT created_by FROM group_trip WHERE id=%s", (group_id,))
     row = cursor.fetchone()
 
-    if row and row["created_by"] == user_id:
+    if not row:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    if row["created_by"] == user_id:
         cursor.close()
         conn.close()
         raise HTTPException(status_code=403, detail="Creator cannot exit the group")
@@ -440,13 +477,19 @@ async def group_exit(request: Request):
 
     return {"success": True}
 
-async def group_delete(request: Request):
+
+# -----------------------------------------
+# 11) DELETE GROUP (creator only)
+# -----------------------------------------
+async def group_delete(request: Request, current_user: dict):
     data = await request.json()
     group_id = data.get("group_id")
-    user_id = data.get("user_id")
 
-    if not group_id or not user_id:
+    if not group_id:
         raise HTTPException(status_code=400, detail="Missing fields")
+
+    # The acting user is always the authenticated caller.
+    user_id = current_user["id"]
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)

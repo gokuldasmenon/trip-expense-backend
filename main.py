@@ -1,7 +1,7 @@
 import json
 import os
 import traceback
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 import psycopg2, psycopg2.extras, random, string
@@ -15,6 +15,27 @@ from models import (
     FamilyUpdate, ExpenseUpdate, AdvanceModel, UserIn
 )
 from services import trips, families, expenses, advances, settlement
+from auth import (
+    get_current_user,
+    get_current_user_ws,
+    is_trip_member,
+    require_trip_access,
+    require_trip_owner,
+    require_group_access,
+    require_group_creator,
+    trip_id_for_family,
+    trip_id_for_expense,
+    trip_id_for_advance,
+    trip_id_for_settlement_txn,
+    trip_id_for_stay_settlement,
+    trip_id_for_trip_settlement,
+    trip_id_for_carry_forward_log,
+    group_id_for_group_expense,
+    create_access_token,
+    generate_and_store_otp,
+    send_otp_sms,
+    verify_otp as verify_otp_code,
+)
 from io import BytesIO
 import os
 import sys
@@ -115,11 +136,12 @@ def on_startup():
 # ================================================
 # 👥 USERS
 # ================================================
-@app.post("/login_user")
-async def login_user(request: Request):
+@app.post("/auth/request_otp")
+async def request_otp(request: Request):
     """
-    Login by phone or email.
-    If user not found, auto-register them (no manual registration needed).
+    Step 1 of login: caller supplies a phone number, we generate + store an
+    OTP and send it via SMS (or log it for local/dev use if no SMS provider
+    is configured).
     """
     try:
         data = await request.json()
@@ -127,117 +149,103 @@ async def login_user(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     phone = data.get("phone")
-    email = data.get("email")
-    name = data.get("name") or "User"
+    if not phone or not isinstance(phone, str) or not phone.strip():
+        raise HTTPException(status_code=400, detail="phone is required")
+    phone = phone.strip()
 
-    if not phone and not email:
-        raise HTTPException(status_code=400, detail="Provide either phone or email")
+    code = generate_and_store_otp(phone)
+    sent_via_sms = send_otp_sms(phone, code)
+
+    response = {"message": "OTP sent" if sent_via_sms else "OTP generated (dev mode)"}
+    if not sent_via_sms:
+        response["debug_otp"] = code
+    return response
+
+
+@app.post("/auth/verify_otp")
+async def verify_otp_endpoint(request: Request):
+    """
+    Step 2 of login: caller supplies phone + the OTP code they received.
+    On success, returns a JWT access token to use as
+    'Authorization: Bearer <token>' on every subsequent request.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    phone = data.get("phone")
+    code = data.get("code")
+    if not phone or not isinstance(phone, str) or not phone.strip():
+        raise HTTPException(status_code=400, detail="phone is required")
+    if not code or not isinstance(code, str) or not code.strip():
+        raise HTTPException(status_code=400, detail="code is required")
+    phone = phone.strip()
+    code = code.strip()
+
+    # Raises HTTPException on bad/expired/missing OTP.
+    verify_otp_code(phone, code)
 
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-    # ✅ Only check by provided field
-    if phone:
+    try:
         cursor.execute("""
             SELECT id, name, phone, email, created_at
             FROM users
             WHERE phone = %s
         """, (phone,))
-    else:
-        cursor.execute("""
-            SELECT id, name, phone, email, created_at
-            FROM users
-            WHERE email = %s
-        """, (email,))
-
-    user = cursor.fetchone()
-
-    # 🟩 Auto-register if not found
-    if not user:
-        cursor.execute("""
-            INSERT INTO users (name, phone, email)
-            VALUES (%s, %s, %s)
-            RETURNING id, name, phone, email, created_at
-        """, (name, phone, email))
         user = cursor.fetchone()
-        conn.commit()
 
-    cursor.close()
-    conn.close()
-
-    # Safe datetime serialization
-    for k, v in user.items():
-        if isinstance(v, datetime):
-            user[k] = v.isoformat()
-
-    return {"message": "✅ Login successful", "user": user}
-
-
-@app.post("/register_user")
-def register_user(user: dict):
-    """Register a new user or return if exists (by valid phone/email only)."""
-    conn = get_connection()
-    cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    try:
-        name = user.get("name", "User")
-        phone = user.get("phone")
-        email = user.get("email")
-
-        if not phone and not email:
-            raise HTTPException(status_code=400, detail="Phone or Email is required.")
-
-        # 🧹 Normalize blanks to None
-        phone = phone.strip() if phone and phone.strip() else None
-        email = email.strip() if email and email.strip() else None
-
-        # 🔍 Build query dynamically (ignore NULL/blank values)
-        if phone and email:
-            cursor.execute("""
-                SELECT id, name, phone, email, created_at
-                FROM users
-                WHERE phone = %s OR email = %s
-            """, (phone, email))
-        elif phone:
-            cursor.execute("""
-                SELECT id, name, phone, email, created_at
-                FROM users
-                WHERE phone = %s
-            """, (phone,))
-        elif email:
-            cursor.execute("""
-                SELECT id, name, phone, email, created_at
-                FROM users
-                WHERE email = %s
-            """, (email,))
-        else:
-            raise HTTPException(status_code=400, detail="Provide valid phone or email")
-
-        existing = cursor.fetchone()
-
-        # 🟢 Create new user if not found
-        if not existing:
+        if not user:
+            name = data.get("name") or "User"
             cursor.execute("""
                 INSERT INTO users (name, phone, email)
                 VALUES (%s, %s, %s)
                 RETURNING id, name, phone, email, created_at
-            """, (name, phone, email))
-            existing = cursor.fetchone()
+            """, (name, phone, None))
+            user = cursor.fetchone()
             conn.commit()
-            msg = "✅ User registered successfully"
-        else:
-            msg = "User already registered"
-
-        return {"message": msg, "user": existing}
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
     finally:
         cursor.close()
         conn.close()
 
-@app.websocket("/ws/trips/{trip_id}/{user_id}")
-async def trip_websocket(websocket: WebSocket, trip_id: int, user_id: int):
+    for k, v in user.items():
+        if isinstance(v, datetime):
+            user[k] = v.isoformat()
+
+    token = create_access_token(user["id"], user["phone"])
+
+    return {"message": "Login successful", "token": token, "user": user}
+
+
+@app.post("/login_user")
+async def login_user(request: Request):
+    """RETIRED — use /auth/request_otp + /auth/verify_otp instead."""
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint has been retired. Use /auth/request_otp and /auth/verify_otp instead.",
+    )
+
+
+@app.post("/register_user")
+def register_user(user: dict):
+    """RETIRED — use /auth/request_otp + /auth/verify_otp instead."""
+    raise HTTPException(
+        status_code=410,
+        detail="This endpoint has been retired. Use /auth/request_otp and /auth/verify_otp instead.",
+    )
+
+@app.websocket("/ws/trips/{trip_id}")
+async def trip_websocket(websocket: WebSocket, trip_id: int):
+    user = await get_current_user_ws(websocket)
+    if not user:
+        await websocket.close(code=4401)
+        return
+    if not is_trip_member(trip_id, user["id"]):
+        await websocket.close(code=4403)
+        return
+
+    user_id = user["id"]
     await ws_manager.connect(trip_id, websocket)
     print(f"🔌 WebSocket connected trip={trip_id} user={user_id}")
     try:
@@ -258,16 +266,22 @@ def generate_access_code(length=6):
 
 
 @app.post("/add_trip")
-def add_trip(trip: TripIn):
+def add_trip(trip: TripIn, current_user: dict = Depends(get_current_user)):
     """
     Creates a new trip or stay session.
     Automatically assigns owner and mode (TRIP/STAY).
+    The owner is always the authenticated caller — any client-supplied
+    owner_id/owner_name is ignored so a trip can't be created "owned by"
+    someone else.
     """
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     try:
         access_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+        owner_id = current_user["id"]
+        owner_name = current_user["name"]
 
         cursor.execute("""
             INSERT INTO trips (name, start_date, trip_type, mode, billing_cycle, access_code,
@@ -281,8 +295,8 @@ def add_trip(trip: TripIn):
             getattr(trip, 'mode', 'TRIP'),
             getattr(trip, 'billing_cycle', None),
             access_code,
-            getattr(trip, 'owner_name', 'User'),
-            getattr(trip, 'owner_id', None),
+            owner_name,
+            owner_id,
         ))
 
         new_trip = cursor.fetchone()
@@ -293,7 +307,7 @@ def add_trip(trip: TripIn):
             INSERT INTO trip_members (trip_id, user_id, role)
             VALUES (%s, %s, 'owner')
             ON CONFLICT (trip_id, user_id) DO NOTHING
-        """, (new_trip['id'], trip.owner_id))
+        """, (new_trip['id'], owner_id))
         conn.commit()
 
         return {
@@ -315,11 +329,13 @@ def add_trip(trip: TripIn):
 import json
 
 @app.post("/join_trip/{access_code}")
-async def join_trip(access_code: str, user_id: int):
+async def join_trip(access_code: str, current_user: dict = Depends(get_current_user)):
     """
-    Join a trip using access code + user_id.
+    Join a trip using access code. The joining user is always the
+    authenticated caller.
     Also notifies all connected members via WebSocket.
     """
+    user_id = current_user["id"]
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -393,11 +409,12 @@ async def join_trip(access_code: str, user_id: int):
 
 
 @app.post("/exit_trip/{trip_id}")
-def exit_trip(trip_id: int, user_id: int):
+def exit_trip(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
-    Exit a trip using trip_id + user_id.
+    Exit a trip. The exiting user is always the authenticated caller.
     User cannot exit if they are the owner.
     """
+    user_id = current_user["id"]
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -444,10 +461,13 @@ def exit_trip(trip_id: int, user_id: int):
         cursor.close()
         conn.close()
 @app.post("/remove_member/{trip_id}")
-def remove_member(trip_id: int, owner_id: int, member_id: int):
+def remove_member(trip_id: int, member_id: int, current_user: dict = Depends(get_current_user)):
     """
-    Owner removes another participant from the trip.
+    Owner removes another participant from the trip. The acting owner is
+    always the authenticated caller.
     """
+    require_trip_owner(trip_id, current_user)
+    owner_id = current_user["id"]
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -496,10 +516,11 @@ def remove_member(trip_id: int, owner_id: int, member_id: int):
         cursor.close()
         conn.close()
 @app.get("/trip_members/{trip_id}")
-def get_trip_members(trip_id: int):
+def get_trip_members(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Get all members of a trip with their role.
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -533,13 +554,16 @@ def get_trip_members(trip_id: int):
         conn.close()
 
 @app.get("/trips/{user_id}")
-def get_trips_for_user_endpoint(user_id: int):
+def get_trips_for_user_endpoint(user_id: int, current_user: dict = Depends(get_current_user)):
     """
     API endpoint: returns all ACTIVE trips (own + joined) for a user.
     Delegates logic to trips.get_trips_for_user() in services/trips.py.
+    NOTE: the path `user_id` is kept for URL compatibility but is IGNORED
+    for data access — we always fetch trips for the authenticated caller,
+    so you can't list another user's trips by guessing their id.
     """
     try:
-        result = trips.get_trips_for_user(user_id)
+        result = trips.get_trips_for_user(current_user["id"])
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trips: {e}")
@@ -547,8 +571,9 @@ def get_trips_for_user_endpoint(user_id: int):
 
 
 @app.get("/trip/{trip_id}")
-def get_trip(trip_id: int):
+def get_trip(trip_id: int, current_user: dict = Depends(get_current_user)):
     """Fetch single trip with owner info."""
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("""
@@ -575,46 +600,55 @@ def get_trip(trip_id: int):
 # 👨‍👩‍👧 FAMILIES / 💰 EXPENSES / 💸 ADVANCES / 📊 REPORTS
 # ================================================
 @app.post("/add_family")
-def add_family(family: FamilyIn):
+def add_family(family: FamilyIn, current_user: dict = Depends(get_current_user)):
+    require_trip_access(family.trip_id, current_user)
     return families.add_family(family.trip_id, family.family_name, family.members_count)
 
 
 @app.get("/families/{trip_id}")
-def get_families(trip_id: int):
+def get_families(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     return families.get_families(trip_id)
 
 
 @app.put("/update_family/{family_id}")
-def update_family(family_id: int, family: FamilyUpdate):
+def update_family(family_id: int, family: FamilyUpdate, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_family(family_id), current_user)
     return families.update_family(family_id, family.family_name, family.members_count)
 
 
 @app.delete("/delete_family/{family_id}")
-def delete_family(family_id: int):
+def delete_family(family_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_family(family_id), current_user)
     return families.delete_family(family_id)
 
 
 @app.post("/add_expense")
-def add_expense(expense: ExpenseIn):
+def add_expense(expense: ExpenseIn, current_user: dict = Depends(get_current_user)):
+    require_trip_access(expense.trip_id, current_user)
     return expenses.add_expense(expense.trip_id, expense.payer_id, expense.name, expense.amount, expense.date)
 
 
 @app.get("/get_expenses/{trip_id}")
-def get_expenses(trip_id: int):
+def get_expenses(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     return {"expenses": expenses.get_expenses(trip_id)}
 
 
 @app.put("/update_expense/{expense_id}")
-def update_expense(expense_id: int, expense: ExpenseUpdate):
+def update_expense(expense_id: int, expense: ExpenseUpdate, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_expense(expense_id), current_user)
     return expenses.update_expense(expense_id, expense.payer_id, expense.name, expense.amount, expense.date)
 
 
 @app.delete("/delete_expense/{expense_id}")
-def delete_expense(expense_id: int):
+def delete_expense(expense_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_expense(expense_id), current_user)
     return expenses.delete_expense(expense_id)
 
 @app.post("/archive_expenses/{trip_id}/{settlement_id}")
-def archive_expenses(trip_id: int, settlement_id: int):
+def archive_expenses(trip_id: int, settlement_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     try:
         conn = get_connection()
         cursor = conn.cursor()
@@ -650,7 +684,8 @@ def archive_expenses(trip_id: int, settlement_id: int):
         conn.close()
 
 @app.get("/expenses-archived/{trip_id}")
-def get_archived_expenses(trip_id: int):
+def get_archived_expenses(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -676,15 +711,18 @@ def get_archived_expenses(trip_id: int):
 
 
 @app.post("/add_advance")
-def add_advance(advance: AdvanceModel):
+def add_advance(advance: AdvanceModel, current_user: dict = Depends(get_current_user)):
+    require_trip_access(advance.trip_id, current_user)
     return advances.add_advance(advance.trip_id, advance.payer_family_id, advance.receiver_family_id, advance.amount, advance.date)
 
 
 @app.get("/advances/{trip_id}")
-def get_advances(trip_id: int):
+def get_advances(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     return advances.get_advances(trip_id)
 @app.get("/archived_advances/{trip_id}")
-def get_archived_advances(trip_id: int):
+def get_archived_advances(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -706,7 +744,8 @@ def get_archived_advances(trip_id: int):
     return out
 
 @app.delete("/advance/{advance_id}")
-def delete_advance(advance_id: int):
+def delete_advance(advance_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_advance(advance_id), current_user)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -737,8 +776,13 @@ def delete_advance(advance_id: int):
 @app.put("/advances/{advance_id}")
 def update_advance(
     advance_id: int,
-    advance: AdvanceModel = Body(...)
+    advance: AdvanceModel = Body(...),
+    current_user: dict = Depends(get_current_user),
 ):
+    path_trip_id = trip_id_for_advance(advance_id)
+    if advance.trip_id != path_trip_id:
+        raise HTTPException(status_code=400, detail="trip_id does not match this advance")
+    require_trip_access(path_trip_id, current_user)
     return advances.update_advance(
         advance_id,
         advance.trip_id,
@@ -753,12 +797,13 @@ def update_advance(
 
 
 @app.get("/sync_settlement/{trip_id}")
-def sync_settlement(trip_id: int):
+def sync_settlement(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Returns settlement in format expected by Flutter  .
     Includes timestamp and wraps settlement data inside "data".
     Logs detailed traceback for Render debugging.
     """
+    require_trip_access(trip_id, current_user)
     try:
         result = settlement.get_settlement(trip_id)
         return {
@@ -778,23 +823,27 @@ def sync_settlement(trip_id: int):
 
 
 @app.get("/trip_summary/{trip_id}")
-def trip_summary(trip_id: int):
+def trip_summary(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     return settlement.get_trip_summary(trip_id)
 
 @app.put("/trips/archive/{trip_id}")
-def archive_trip(trip_id: int):
+def archive_trip(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_owner(trip_id, current_user)
     return trips.archive_trip(trip_id)
 
 @app.delete("/trips/{trip_id}")
-def delete_trip(trip_id: int): 
+def delete_trip(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_owner(trip_id, current_user)
     return trips.delete_trip(trip_id)
 @app.put("/trips/restore/{trip_id}")
-def restore_trip_endpoint(trip_id: int):
+def restore_trip_endpoint(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_owner(trip_id, current_user)
     return trips.restore_trip(trip_id)
 
 @app.get("/archived_trips")
-def get_archived_trips_endpoint():
-    return trips.get_archived_trips()
+def get_archived_trips_endpoint(current_user: dict = Depends(get_current_user)):
+    return trips.get_archived_trips(current_user["id"])
 
 # ============================
 # 🏠 STAY SETTLEMENT RECORDS
@@ -804,10 +853,11 @@ def get_archived_trips_endpoint():
 # 🧾 LIST ALL STAY SETTLEMENTS
 # ==========================================
 @app.get("/stay_settlements/{trip_id}")
-def list_stay_settlements(trip_id: int):
+def list_stay_settlements(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     List all recorded settlements for a given Stay trip.
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -834,11 +884,12 @@ def list_stay_settlements(trip_id: int):
 # 🧾 GET SINGLE STAY SETTLEMENT DETAILS
 # ==========================================
 @app.get("/stay_settlement/{settlement_id}")
-def get_stay_settlement_detail(settlement_id: int):
+def get_stay_settlement_detail(settlement_id: int, current_user: dict = Depends(get_current_user)):
     """
     Retrieve details for a specific recorded stay settlement.
     Includes settlement header and each family's contribution/balance.
     """
+    require_trip_access(trip_id_for_stay_settlement(settlement_id), current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -880,10 +931,11 @@ def get_stay_settlement_detail(settlement_id: int):
     return settlement
 
 @app.post("/settlement_transaction")
-def add_settlement_transaction(payload: dict):
+def add_settlement_transaction(payload: dict, current_user: dict = Depends(get_current_user)):
     """
     Records an actual settlement transaction (money transfer).
     """
+    require_trip_access(payload["trip_id"], current_user)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -907,10 +959,11 @@ def add_settlement_transaction(payload: dict):
     return {"message": "Transaction recorded successfully", "transaction_id": transaction_id}
 
 @app.get("/settlement_transactions/{trip_id}")
-def get_settlement_transactions(trip_id: int):
+def get_settlement_transactions(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Returns all recorded settlement transactions for a given trip.
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -935,7 +988,8 @@ def get_settlement_transactions(trip_id: int):
     return {"trip_id": trip_id, "transactions": rows}
 
 @app.get("/settlement_transactions_archive/{trip_id}")
-def get_archived_transactions(trip_id: int):
+def get_archived_transactions(trip_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -962,11 +1016,12 @@ def get_archived_transactions(trip_id: int):
 # 🏠 RECORD A STAY SETTLEMENT
 # ==========================================
 @app.post("/record_stay_settlement/{trip_id}")
-def record_stay_settlement_endpoint(trip_id: int):
+def record_stay_settlement_endpoint(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Computes and records a stay settlement for the given trip.
     Creates entries in stay_settlements and stay_settlement_details.
     """
+    require_trip_access(trip_id, current_user)
     try:
         print(f"🟢 Starting stay settlement recording for trip_id={trip_id}")
         result = calculate_stay_settlement(trip_id)
@@ -987,7 +1042,8 @@ def record_stay_settlement_endpoint(trip_id: int):
 # ==============================
 
 @app.put("/update_settlement_transaction/{txn_id}")
-def update_settlement_transaction(txn_id: int, payload: dict):
+def update_settlement_transaction(txn_id: int, payload: dict, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_settlement_txn(txn_id), current_user)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -1021,7 +1077,8 @@ def update_settlement_transaction(txn_id: int, payload: dict):
 
 
 @app.delete("/delete_settlement_transaction/{txn_id}")
-def delete_settlement_transaction(txn_id: int):
+def delete_settlement_transaction(txn_id: int, current_user: dict = Depends(get_current_user)):
+    require_trip_access(trip_id_for_settlement_txn(txn_id), current_user)
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -1056,12 +1113,13 @@ def delete_settlement_transaction(txn_id: int):
 from fastapi import Query
 
 @app.get("/stay_carry_forward_log/{trip_id}")
-def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
+def get_carry_forward_log(trip_id: int, family_id: int = Query(None), current_user: dict = Depends(get_current_user)):
     """
     Retrieves carry-forward log(s) for a Stay trip.
     Optionally filters by family_id.
     Includes trip name, stay period, and settlement dates.
     """
+    require_trip_access(trip_id, current_user)
     try:
         conn = get_connection()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1135,11 +1193,12 @@ def get_carry_forward_log(trip_id: int, family_id: int = Query(None)):
         raise HTTPException(status_code=500, detail=f"Failed to fetch carry-forward log: {e}")
 
 @app.get("/stay_carry_forward_logs/{trip_id}")
-def list_stay_carry_forward_logs(trip_id: int):
+def list_stay_carry_forward_logs(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Returns all carry-forward log entries for a trip,
     enriched with family names and stay period (start → end).
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -1171,10 +1230,11 @@ def list_stay_carry_forward_logs(trip_id: int):
 
 
 @app.delete("/stay_carry_forward_log/{log_id}")
-def delete_stay_carry_forward_log(log_id: int):
+def delete_stay_carry_forward_log(log_id: int, current_user: dict = Depends(get_current_user)):
     """
     Deletes a single carry-forward log entry.
     """
+    require_trip_access(trip_id_for_carry_forward_log(log_id), current_user)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM stay_carry_forward_log WHERE id = %s;", (log_id,))
@@ -1183,10 +1243,11 @@ def delete_stay_carry_forward_log(log_id: int):
     return {"message": f"Carry-forward log {log_id} deleted successfully."}
 
 @app.delete("/stay_carry_forward_logs/clear/{trip_id}")
-def clear_all_stay_carry_forward_logs(trip_id: int):
+def clear_all_stay_carry_forward_logs(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Clears all carry-forward logs for a given trip.
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM stay_carry_forward_log WHERE trip_id = %s;", (trip_id,))
@@ -1195,10 +1256,11 @@ def clear_all_stay_carry_forward_logs(trip_id: int):
     return {"message": f"All carry-forward logs cleared for trip {trip_id}."}
 
 @app.get("/stay_transactions/{settlement_id}")
-def get_stay_transactions(settlement_id: int):
+def get_stay_transactions(settlement_id: int, current_user: dict = Depends(get_current_user)):
     """
     Returns all inter-family transactions recorded for a stay settlement.
     """
+    require_trip_access(trip_id_for_stay_settlement(settlement_id), current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -1215,15 +1277,18 @@ def get_stay_transactions(settlement_id: int):
     return {"settlement_id": settlement_id, "transactions": transactions}
 
 
-@app.get("/settlement/{trip_id}")
-def unified_settlement_endpoint(
+def _compute_unified_settlement(
     trip_id: int,
     mode: str = "TRIP",
     period: str = None,
     record: bool = False
 ):
     """
-    Unified settlement endpoint for both TRIP and STAY modes.
+    Plain (non-FastAPI-dependency) helper holding the actual unified
+    settlement calculation for both TRIP and STAY modes, so it can be
+    called directly from Python (e.g. by settlement_snapshot) as well as
+    from the /settlement/{trip_id} route below. Auth/authorization checks
+    live on the route wrappers that call this, not here.
     - mode = TRIP or STAY
     - period = optional (e.g., 'monthly' or custom date range)
     - record = if True, records the settlement permanently
@@ -1314,12 +1379,25 @@ def unified_settlement_endpoint(
         raise HTTPException(status_code=500, detail=f"Settlement generation failed: {e}")
 
 
+@app.get("/settlement/{trip_id}")
+def unified_settlement_endpoint(
+    trip_id: int,
+    mode: str = "TRIP",
+    period: str = None,
+    record: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    """Route wrapper: auth-gates then delegates to _compute_unified_settlement."""
+    require_trip_access(trip_id, current_user)
+    return _compute_unified_settlement(trip_id, mode=mode, period=period, record=record)
+
 
 @app.get("/trip_settlements/{trip_id}")
-def list_trip_settlements(trip_id: int):
+def list_trip_settlements(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     List all recorded settlements for a given Trip.
     """
+    require_trip_access(trip_id, current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -1340,11 +1418,12 @@ def list_trip_settlements(trip_id: int):
     return {"trip_id": trip_id, "settlement_records": records}
 
 @app.get("/trip_settlement/{settlement_id}")
-def get_trip_settlement_detail(settlement_id: int):
+def get_trip_settlement_detail(settlement_id: int, current_user: dict = Depends(get_current_user)):
     """
     Retrieve details for a specific recorded trip settlement.
     Includes each family's contribution and balance.
     """
+    require_trip_access(trip_id_for_trip_settlement(settlement_id), current_user)
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -1394,8 +1473,9 @@ def get_trip_settlement_detail(settlement_id: int):
 
 
 @app.get("/download_pdf/{trip_id}")
-def download_pdf(trip_id: int):
+def download_pdf(trip_id: int, current_user: dict = Depends(get_current_user)):
     """Admin-only minimal PDF download."""
+    require_trip_access(trip_id, current_user)
     file_path = generate_settlement_pdf(trip_id)
     return FileResponse(path=file_path, filename=os.path.basename(file_path), media_type="application/pdf")
 
@@ -1403,22 +1483,25 @@ def download_pdf(trip_id: int):
 
 
 @app.get("/share_pdf/{trip_id}")
-def share_pdf(trip_id: int):
+def share_pdf(trip_id: int, current_user: dict = Depends(get_current_user)):
     """Generate and share a WhatsApp link for this report."""
+    require_trip_access(trip_id, current_user)
     return share_pdf_via_whatsapp(trip_id)
 
 
 @app.get("/settlement_snapshot/{trip_id}")
-def settlement_snapshot(trip_id: int):
+def settlement_snapshot(trip_id: int, current_user: dict = Depends(get_current_user)):
     """
     Returns REAL settlement data exactly as seen on the Settlement page.
     No more stale DB snapshots.
     """
+    require_trip_access(trip_id, current_user)
 
     print(f"📗 Generating LIVE snapshot for report (trip={trip_id}, mode=STAY)")
 
-    # Call the same calculation used in the UI
-    data = unified_settlement_endpoint(
+    # Call the shared plain helper directly (not the route function) — see
+    # _compute_unified_settlement for why.
+    data = _compute_unified_settlement(
         trip_id=trip_id,
         mode="STAY",
         period=None,
@@ -1432,50 +1515,50 @@ def settlement_snapshot(trip_id: int):
     return data
 
 @app.post("/group/create")
-async def route_group_create(request: Request):
-    return await group_create(request)
+async def route_group_create(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_create(request, current_user)
 
 @app.get("/group/details")
-async def route_group_details(group_id: int, user_id: int):
-    return await group_get_details(group_id, user_id)
+async def route_group_details(group_id: int, current_user: dict = Depends(get_current_user)):
+    return await group_get_details(group_id, current_user)
 
 # @app.get("/group/current")
 # async def route_group_current(user_id: int | None = None):
 #     return await group_get_current(user_id)
 
 @app.post("/group/add_expense")
-async def route_group_add_expense(request: Request):
-    return await group_add_expense(request)
+async def route_group_add_expense(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_add_expense(request, current_user)
 
 @app.post("/group/delete_expense")
-async def route_group_delete_expense(request: Request):
-    return await group_delete_expense(request)
+async def route_group_delete_expense(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_delete_expense(request, current_user)
 
 @app.post("/group/update_participants")
-async def route_group_update_participants(request: Request):
-    return await group_update_participants(request)
+async def route_group_update_participants(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_update_participants(request, current_user)
 
 @app.post("/group/join")
-async def route_group_join(request: Request):
-    return await group_join(request)
+async def route_group_join(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_join(request, current_user)
 
 @app.post("/group/edit_expense")
-async def route_group_edit_expense(request: Request):
-    
-    return await group_edit_expense(request)
+async def route_group_edit_expense(request: Request, current_user: dict = Depends(get_current_user)):
+
+    return await group_edit_expense(request, current_user)
 
 @app.post("/group/update_initial_fund")
-async def route_group_update_initial_fund(request: Request):
-   
-    return await group_update_initial_fund(request)
+async def route_group_update_initial_fund(request: Request, current_user: dict = Depends(get_current_user)):
+
+    return await group_update_initial_fund(request, current_user)
 @app.post("/group/exit")
-async def route_group_exit(request: Request):
-    return await group_exit(request)
+async def route_group_exit(request: Request, current_user: dict = Depends(get_current_user)):
+    return await group_exit(request, current_user)
 
 @app.post("/group/delete")
-async def route_group_delete(request: Request):
-    
-    return await group_delete(request)
+async def route_group_delete(request: Request, current_user: dict = Depends(get_current_user)):
+
+    return await group_delete(request, current_user)
 @app.get("/group/list")
-async def route_group_list(user_id: int):
-    return await group_get_all(user_id)
+async def route_group_list(current_user: dict = Depends(get_current_user)):
+    return await group_get_all(current_user)

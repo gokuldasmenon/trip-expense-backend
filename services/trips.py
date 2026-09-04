@@ -107,14 +107,19 @@ def get_trips_for_user(user_id: int):
     return {"own_trips": own_trips, "joined_trips": joined_trips}
 
 
-def get_archived_trips():
+def get_archived_trips(user_id: int):
+    """Returns archived trips this user owns OR is a member of (mirrors the
+    own/joined filtering pattern used by get_trips_for_user)."""
     conn = get_connection()
     cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cursor.execute("""
-        SELECT * FROM trips
-        WHERE status='ARCHIVED'
-        ORDER BY id DESC
-    """)
+        SELECT DISTINCT t.*
+        FROM trips t
+        LEFT JOIN trip_members tm ON tm.trip_id = t.id
+        WHERE t.status = 'ARCHIVED'
+          AND (t.owner_id = %s OR tm.user_id = %s)
+        ORDER BY t.id DESC
+    """, (user_id, user_id))
     trips = cursor.fetchall()
     cursor.close()
     conn.close()
